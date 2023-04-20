@@ -27,6 +27,7 @@ Python modules used are:
 - pathlib
 - matplotlib
 - numpy
+- opencv
 - pandas
 - tifffile
 - tisgrabber
