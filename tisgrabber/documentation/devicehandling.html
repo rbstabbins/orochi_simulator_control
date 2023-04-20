@@ -1,0 +1,401 @@
+
+
+<!doctype html>
+
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="generator" content="Docutils 0.17.1: http://docutils.sourceforge.net/" />
+
+    <title>Device Handling &#8212; Python tisgrabber Tutorial  documentation</title>
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="_static/bizstyle.css" />
+    
+    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
+    <script src="_static/jquery.js"></script>
+    <script src="_static/underscore.js"></script>
+    <script src="_static/doctools.js"></script>
+    <script src="_static/bizstyle.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Properties" href="properties.html" />
+    <link rel="prev" title="First Steps" href="firststeps.html" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <!--[if lt IE 9]>
+    <script src="_static/css3-mediaqueries.js"></script>
+    <![endif]-->
+  </head><body>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="properties.html" title="Properties"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="firststeps.html" title="First Steps"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">Python tisgrabber Tutorial  documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="tutorial.html" accesskey="U">Tutorial</a> &#187;</li>
+        <li class="nav-item nav-item-this"><a href="">Device Handling</a></li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <section id="device-handling">
+<h1>Device Handling<a class="headerlink" href="#device-handling" title="Permalink to this headline">¶</a></h1>
+<p>This chapter shows, how to open a video capture <span class="target" id="index-0"></span>device, set a video format and a frame rate.
+The tisgrabber DLL offers different ways in order to open a video capture device.</p>
+<section id="ic-showdeviceselectiondialog">
+<h2>IC_ShowDeviceSelectionDialog<a class="headerlink" href="#ic-showdeviceselectiondialog" title="Permalink to this headline">¶</a></h2>
+<p>Code : 01-Live.py</p>
+<p>This shows a built in dialog for selecting a video capture device, a video format and frame rate. It also has a button, which shows the device property dialog. The function returns a valid HGRABBER handle, even if no device was selected:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">hGrabber</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_ShowDeviceSelectionDialog</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="open-a-device-manually-by-model-name">
+<h2>Open a Device Manually by Model Name<a class="headerlink" href="#open-a-device-manually-by-model-name" title="Permalink to this headline">¶</a></h2>
+<p>Code : 02-open-manually.py</p>
+<p>This means, that a <code class="docutils literal notranslate"><span class="pre">HGRABBER</span></code> is created and the device name, video format and frame rate a passed hard coded to the handle. That means, the programmer knows camera name, video format and frame rate to be used already.
+The function <code class="docutils literal notranslate"><span class="pre">IC_CreateGrabber()</span></code> of <em>tisgrabber.dll</em> is used to create a <code class="docutils literal notranslate"><span class="pre">HGRABBER</span></code> object:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">hGrabber</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_CreateGrabber</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The video capture device is opened by</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ic</span><span class="o">.</span><span class="n">IC_OpenVideoCaptureDevice</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;DFK 33GR0521&quot;</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>It is always a good idea to check, whether that was successful:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="p">(</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_IsDevValid</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">)):</span>
+</pre></div>
+</div>
+<p>If it was successful, the video format and the frame rate can be set:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ic</span><span class="o">.</span><span class="n">IC_SetVideoFormat</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;RGB32 (640x480)&quot;</span><span class="p">))</span>
+<span class="n">ic</span><span class="o">.</span><span class="n">IC_SetFrameRate</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">ctypes</span><span class="o">.</span><span class="n">c_float</span><span class="p">(</span> <span class="mf">30.0</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>The video capture device is ready to show a live video now.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ic</span><span class="o">.</span><span class="n">IC_StartLive</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span><span class="mi">1</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>This code sets the format directly on the sensor. It is often called “setting an ROI” (Region of Interest). Most cameras will provide higher frame rates, the smaller the format is.
+There are limitations for with and height. Usually both should be dividable by 4. And sensors have minimum sizes,e.g. 256x4.
+ic.IC_SetVideoFormat() returns 1 if the format could be set successfully and 0, if an invalid format was passed, e.g. “RGB32 (255x255)”.</p>
+</section>
+<section id="open-a-device-by-model-name-and-serial-number">
+<h2>Open a Device by Model Name and Serial Number<a class="headerlink" href="#open-a-device-by-model-name-and-serial-number" title="Permalink to this headline">¶</a></h2>
+<p>If many device of the same model are in use, then the <span class="target" id="index-1"></span>serial number of a device identifies it unique. This is used
+in the function <code class="docutils literal notranslate"><span class="pre">ic.IC_OpenDevByUniqueName(g,</span> <span class="pre">tis.T(uniquename))</span></code>. The unique name is built from device model and and its
+serial number separated by a space:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">g</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_CreateGrabber</span><span class="p">()</span>
+<span class="n">ic</span><span class="o">.</span><span class="n">IC_OpenDevByUniqueName</span><span class="p">(</span><span class="n">g</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;DFK Z30GP031 41910044&quot;</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>How to get a list of devices and their serial numbers is shown later in this tutorial.</p>
+</section>
+<section id="using-device-configuration-files">
+<h2>Using Device Configuration Files<a class="headerlink" href="#using-device-configuration-files" title="Permalink to this headline">¶</a></h2>
+<p>IC Imaging Control and therefore the tisgrabber DLL can use configuration files for device state saving and loading. These files are XML files and contain the complete device state, such as video format, frame rate and properties. They also contain the serial number of the device it was created with, so in multi camera applications a specific file configures always the same camera. There are two functions relevant:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">IC_LoadDeviceStateFromFile</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">IC_SaveDeviceStateToFile</span></code></p></li>
+</ul>
+<section id="creating-the-device-file">
+<h3>Creating the Device file<a class="headerlink" href="#creating-the-device-file" title="Permalink to this headline">¶</a></h3>
+<p>Code : 03-save-to-file.py</p>
+<p><code class="docutils literal notranslate"><span class="pre">IC_SaveDeviceStateToFile</span></code> saves the current device state of an opened video capture device into an XML <span class="target" id="index-2"></span>configuration file.
+The file contains:
+* Device name and <span class="target" id="index-3"></span>serial number
+* Video format
+* Frame rate
+* All properties, such as exposure, gain and so on.</p>
+<p>The following code shows, how to use the <code class="docutils literal notranslate"><span class="pre">IC_SaveDeviceStateToFile</span></code> function:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ic</span><span class="o">.</span><span class="n">IC_InitLibrary</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+
+<span class="n">hGrabber</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_ShowDeviceSelectionDialog</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
+
+<span class="k">if</span><span class="p">(</span><span class="n">ic</span><span class="o">.</span><span class="n">IC_IsDevValid</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">)):</span>
+    <span class="n">ic</span><span class="o">.</span><span class="n">IC_SaveDeviceStateToFile</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;device.xml&quot;</span><span class="p">))</span>
+</pre></div>
+</div>
+</section>
+<section id="open-a-device-by-configuration-file">
+<h3>Open a Device by Configuration File<a class="headerlink" href="#open-a-device-by-configuration-file" title="Permalink to this headline">¶</a></h3>
+<p>Code : 03-open-by-file.py</p>
+<p>The file “device.xml” should exist now.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">hGrabber</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_LoadDeviceStateFromFile</span><span class="p">(</span><span class="kc">None</span><span class="p">,</span><span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;device.xml)))</span>
+</pre></div>
+</div>
+<p>If this was successful, <code class="docutils literal notranslate"><span class="pre">ic.IC_IsDevValid(</span> <span class="pre">hGrabber</span> <span class="pre">)</span></code> returns true.</p>
+<p>In order to open the last used video capture device at e.g. program start, a little helper  <code class="docutils literal notranslate"><span class="pre">openDevice(ic)</span></code> exists in <em>tisgrabber.py</em>
+This saves a lot of time during programming, because the video capture device must not selected always again for each debugging start.</p>
+</section>
+</section>
+<section id="list-devices">
+<h2>List Devices<a class="headerlink" href="#list-devices" title="Permalink to this headline">¶</a></h2>
+<p>Code : 06-list-devices.py</p>
+<p>This sample shows, how to get a list of available video capture devices.</p>
+<p>At first, the number of available devices is queried:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">devicecount</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_GetDeviceCount</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Then the names are listed by an index from 0 to devicecount.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">devicecount</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Device </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">tis</span><span class="o">.</span><span class="n">D</span><span class="p">(</span><span class="n">ic</span><span class="o">.</span><span class="n">IC_GetDevice</span><span class="p">(</span><span class="n">i</span><span class="p">))))</span>
+    <span class="n">uniquename</span> <span class="o">=</span> <span class="n">tis</span><span class="o">.</span><span class="n">D</span><span class="p">(</span><span class="n">ic</span><span class="o">.</span><span class="n">IC_GetUniqueNamefromList</span><span class="p">(</span><span class="n">i</span><span class="p">))</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Unique Name : </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">tis</span><span class="o">.</span><span class="n">D</span><span class="p">(</span><span class="n">ic</span><span class="o">.</span><span class="n">IC_GetUniqueNamefromList</span><span class="p">(</span><span class="n">i</span><span class="p">))))</span>
+</pre></div>
+</div>
+<p>The loop lists the device name and also the device unique name. The <code class="docutils literal notranslate"><span class="pre">tis.D()</span></code> function is used to encode the returned strings
+to UTF8 for Python.</p>
+<p>If each connected video capture device shall be opened, a list of <code class="docutils literal notranslate"><span class="pre">HGRABBER</span></code> objects is needed:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">grabbers</span> <span class="o">=</span> <span class="p">[]</span>
+</pre></div>
+</div>
+<p>The loop is extended to</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">devicecount</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_GetDeviceCount</span><span class="p">()</span>
+<span class="n">grabbers</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">devicecount</span><span class="p">):</span>
+    <span class="n">uniquename</span> <span class="o">=</span> <span class="n">tis</span><span class="o">.</span><span class="n">D</span><span class="p">(</span><span class="n">ic</span><span class="o">.</span><span class="n">IC_GetUniqueNamefromList</span><span class="p">(</span><span class="n">i</span><span class="p">))</span>
+
+    <span class="n">g</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_CreateGrabber</span><span class="p">()</span>
+    <span class="n">ic</span><span class="o">.</span><span class="n">IC_OpenDevByUniqueName</span><span class="p">(</span><span class="n">g</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="n">uniquename</span><span class="p">))</span>
+    <span class="n">grabbers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">g</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Now the grabbers can be started:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">grabber</span> <span class="ow">in</span> <span class="n">grabbers</span><span class="p">:</span>
+    <span class="k">if</span><span class="p">(</span><span class="n">ic</span><span class="o">.</span><span class="n">IC_IsDevValid</span><span class="p">(</span><span class="n">grabber</span><span class="p">)):</span>
+        <span class="n">ic</span><span class="o">.</span><span class="n">IC_StartLive</span><span class="p">(</span><span class="n">grabber</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>and stopped:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">grabber</span> <span class="ow">in</span> <span class="n">grabbers</span><span class="p">:</span>
+    <span class="k">if</span><span class="p">(</span><span class="n">ic</span><span class="o">.</span><span class="n">IC_IsDevValid</span><span class="p">(</span><span class="n">grabber</span><span class="p">)):</span>
+        <span class="n">ic</span><span class="o">.</span><span class="n">IC_StopLive</span><span class="p">(</span><span class="n">grabber</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>At lease release the  <code class="docutils literal notranslate"><span class="pre">HGRABBER</span></code> objects</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">grabber</span> <span class="ow">in</span> <span class="n">grabbers</span><span class="p">:</span>
+    <span class="k">if</span><span class="p">(</span><span class="n">ic</span><span class="o">.</span><span class="n">IC_IsDevValid</span><span class="p">(</span><span class="n">grabber</span><span class="p">)):</span>
+        <span class="n">ic</span><span class="o">.</span><span class="n">IC_ReleaseGrabber</span><span class="p">(</span><span class="n">grabber</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="detect-device-lost">
+<h2>Detect Device Lost<a class="headerlink" href="#detect-device-lost" title="Permalink to this headline">¶</a></h2>
+<p>Code: 33-device-lost-event.py</p>
+<p>It is a good idea to have a notification if a video capture device is
+lost, e.g. by disconnection or something weird in the network. This
+enables a program to react, e.g. try to reconnect the video capture device
+or notify the operator.</p>
+<p>The <span class="target" id="index-4"></span>device lost event uses a callback. The callback is implemented as</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">deviceLostCallback</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">userdata</span><span class="p">):</span>
+    <span class="n">userdata</span><span class="o">.</span><span class="n">connected</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Device </span><span class="si">{}</span><span class="s2"> lost&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">userdata</span><span class="o">.</span><span class="n">devicename</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>It receives as parameters a Grabber and a user data object. The a possible user data class could
+be implemented as follows:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span> <span class="nc">CallbackUserdata</span><span class="p">(</span><span class="n">ctypes</span><span class="o">.</span><span class="n">Structure</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot; Example for user data passed to the callback function.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">unsused</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">devicename</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">connected</span> <span class="o">=</span> <span class="kc">False</span>
+</pre></div>
+</div>
+<p>The device name attribute can be set, when the video capture device is opened.</p>
+<p>Unfortunately a frameready callback is needed too, but this can be an empty function.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">frameReadyCallback</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">pBuffer</span><span class="p">,</span> <span class="n">framenumber</span><span class="p">,</span> <span class="n">pData</span><span class="p">):</span>
+    <span class="c1"># Maybe do something here.</span>
+    <span class="k">return</span>
+</pre></div>
+</div>
+<p>(It is needed, because I do not know, how to pass a NULL value to the set callback function.)</p>
+<p>The function pointers are declared as</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">frameReadyCallbackfunc</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">FRAMEREADYCALLBACK</span><span class="p">(</span><span class="n">frameReadyCallback</span><span class="p">)</span>
+
+<span class="n">userdata</span> <span class="o">=</span> <span class="n">CallbackUserdata</span><span class="p">()</span>
+<span class="n">devicelostcallbackfunc</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">DEVICELOSTCALLBACK</span><span class="p">(</span><span class="n">deviceLostCallback</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>After the video capture device has been opened, the callbacks can be set
+to the <code class="docutils literal notranslate"><span class="pre">hGrabber</span></code> object</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Prepare the callback user data.</span>
+<span class="n">userdata</span><span class="o">.</span><span class="n">devicename</span> <span class="o">=</span> <span class="n">ic</span><span class="o">.</span><span class="n">IC_GetDeviceName</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s1">&#39;utf-8&#39;</span><span class="p">,</span> <span class="s1">&#39;ignore&#39;</span><span class="p">)</span>
+<span class="n">userdata</span><span class="o">.</span><span class="n">connected</span> <span class="o">=</span> <span class="kc">True</span>
+
+<span class="n">ic</span><span class="o">.</span><span class="n">IC_SetCallbacks</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span>
+                   <span class="n">frameReadyCallbackfunc</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span>
+                   <span class="n">devicelostcallbackfunc</span><span class="p">,</span> <span class="n">userdata</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>In this simple script the  <code class="docutils literal notranslate"><span class="pre">userdata.connected</span></code> variable is used to terminate the
+main program in case the device is lost:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">while</span><span class="p">(</span><span class="n">userdata</span><span class="o">.</span><span class="n">connected</span><span class="p">):</span>
+        <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The callbacks always run in the <code class="docutils literal notranslate"><span class="pre">hGrabber</span></code> thread, therefore, it might be necessary to
+implement message handling. For Qt5 it is shown in 41-qt-triggering.py</p>
+</section>
+<section id="roi-binning-co">
+<h2>ROI, Binning &amp; Co<a class="headerlink" href="#roi-binning-co" title="Permalink to this headline">¶</a></h2>
+<p>Code: 07-roi.py</p>
+<section id="setting-an-roi">
+<h3>Setting an ROI<a class="headerlink" href="#setting-an-roi" title="Permalink to this headline">¶</a></h3>
+<p>Most sensors allow to set a physical Region of Interest (<span class="target" id="index-5"></span>ROI) directly on the sensor.
+The camera sends this small ROI only, which usually results in higher frame rates.</p>
+<p>The width and height increments are usually restricted. In most cases, both values
+must be divisible by 4 or 8. Likewise, there is a minimum height and width.</p>
+<p>Currently the <em>tisgrabber.dll</em> does not implement the IC Imaging Control VideoFormatDesc
+object, therefore, the increments and minimum values must be determined manually. the
+built in Device Selection dialog <code class="docutils literal notranslate"><span class="pre">ic.IC_ShowDeviceSelectionDialog(None)</span></code> can be used
+for this. A click on the “Customize” button allows to choose an ROI, if supported.
+The increments can be checked there.</p>
+<p>An ROI is set in code by the video format with the function
+<code class="docutils literal notranslate"><span class="pre">ic.IC_SetVideoFormat(hGrabber,</span> <span class="pre">tis.T(&quot;RGB32</span> <span class="pre">(640x480)&quot;))</span></code>. The format string has
+always the same format:</p>
+<ul class="simple">
+<li><p>Pixel format in the camera, e.g. Y800, Y16, RGB24, RGB32, YUY2, Y411 etc</p></li>
+<li><p>A space</p></li>
+<li><p>Width and height separated by an “x” in brackets</p></li>
+</ul>
+<p>Please keep in mind, a video format can be set only, while the camera does not stream.
+The ROI is always a part of a sensor, therefore, the field of view will always be smaller
+than the full sensor.</p>
+</section>
+<section id="binning-and-skipping">
+<h3>Binning and Skipping<a class="headerlink" href="#binning-and-skipping" title="Permalink to this headline">¶</a></h3>
+<p>Some sensors support <span class="target" id="index-6"></span>binning and <span class="target" id="index-7"></span>skipping.</p>
+<dl class="simple">
+<dt>Binning</dt><dd><p>Binning means that two or more pixels are combined. This can be a simple addition of the brightness values or the average of the brightness values. This is sensor dependent.</p>
+</dd>
+<dt>Skipping</dt><dd><p>Skipping simply skips a corresponding number of pixels.</p>
+</dd>
+</dl>
+<p>On some sensors binning and skipping and be done horizontally and vertically only too.</p>
+<p>In order to enable binning or skipping the text “[Binning 2x]” or “[Skipping 2x]” etc must
+be added to the video format string. For example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ic</span><span class="o">.</span><span class="n">IC_SetVideoFormat</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;RGB32 (640x480) [Skipping 2x]&quot;</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>The width and the height must be small enough to enable binning and skipping. If 2x
+is used, then the maximum useable width and height is the sensor’s width / 2 and height / 2.</p>
+</section>
+<section id="moving-an-roi-on-the-sensor">
+<h3>Moving an ROI on the Sensor<a class="headerlink" href="#moving-an-roi-on-the-sensor" title="Permalink to this headline">¶</a></h3>
+<p>An ROI can be moved on the sensor. The “Partial Scan” properties are used for that.
+Per default it is centered on the sensor by the driver. In order to move a an ROI, The
+<code class="docutils literal notranslate"><span class="pre">Auto-center</span></code> property must be disabled:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Moving the ROI on the sensor need to disable the Partial Scan Auto Center</span>
+<span class="c1"># property:</span>
+<span class="n">ic</span><span class="o">.</span><span class="n">IC_SetPropertySwitch</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;Partial scan&quot;</span><span class="p">),</span>
+                        <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;Auto-center&quot;</span><span class="p">),</span> <span class="mi">0</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Then the ROI can be moved:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ic</span><span class="o">.</span><span class="n">IC_SetPropertyValue</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;Partial scan&quot;</span><span class="p">),</span>
+                       <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;Y Offset&quot;</span><span class="p">),</span> <span class="mi">110</span><span class="p">)</span>
+<span class="n">ic</span><span class="o">.</span><span class="n">IC_SetPropertyValue</span><span class="p">(</span><span class="n">hGrabber</span><span class="p">,</span> <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;Partial scan&quot;</span><span class="p">),</span>
+                       <span class="n">tis</span><span class="o">.</span><span class="n">T</span><span class="p">(</span><span class="s2">&quot;X Offset&quot;</span><span class="p">),</span> <span class="mi">20</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The camera driver internally adjusts the specified values to valid coordinates. The
+ROI an be moved, while the camera streams.</p>
+<p>In case the application needs a fixed center position, I recommend to use a smaller
+ROI and move it, until the center position is correct. This is ofter simpler, than
+moving the camera mechanically.</p>
+</section>
+</section>
+</section>
+
+
+            <div class="clearer"></div>
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="index.html">Table of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Device Handling</a><ul>
+<li><a class="reference internal" href="#ic-showdeviceselectiondialog">IC_ShowDeviceSelectionDialog</a></li>
+<li><a class="reference internal" href="#open-a-device-manually-by-model-name">Open a Device Manually by Model Name</a></li>
+<li><a class="reference internal" href="#open-a-device-by-model-name-and-serial-number">Open a Device by Model Name and Serial Number</a></li>
+<li><a class="reference internal" href="#using-device-configuration-files">Using Device Configuration Files</a><ul>
+<li><a class="reference internal" href="#creating-the-device-file">Creating the Device file</a></li>
+<li><a class="reference internal" href="#open-a-device-by-configuration-file">Open a Device by Configuration File</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#list-devices">List Devices</a></li>
+<li><a class="reference internal" href="#detect-device-lost">Detect Device Lost</a></li>
+<li><a class="reference internal" href="#roi-binning-co">ROI, Binning &amp; Co</a><ul>
+<li><a class="reference internal" href="#setting-an-roi">Setting an ROI</a></li>
+<li><a class="reference internal" href="#binning-and-skipping">Binning and Skipping</a></li>
+<li><a class="reference internal" href="#moving-an-roi-on-the-sensor">Moving an ROI on the Sensor</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="firststeps.html"
+                        title="previous chapter">First Steps</a></p>
+  <h4>Next topic</h4>
+  <p class="topless"><a href="properties.html"
+                        title="next chapter">Properties</a></p>
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="_sources/devicehandling.rst.txt"
+            rel="nofollow">Show Source</a></li>
+    </ul>
+   </div>
+<div id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</div>
+<script>$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="properties.html" title="Properties"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="firststeps.html" title="First Steps"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">Python tisgrabber Tutorial  documentation</a> &#187;</li>
+          <li class="nav-item nav-item-1"><a href="tutorial.html" >Tutorial</a> &#187;</li>
+        <li class="nav-item nav-item-this"><a href="">Device Handling</a></li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+        &#169; Copyright 2021, Stefan Geißler The Imaging Source Europe GmbH.
+      Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 4.2.0.
+    </div>
+  </body>
+</html>
