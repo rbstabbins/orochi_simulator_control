@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.ndimage.filters import gaussian_filter
 import tifffile as tiff
 import tisgrabber as tis
 
@@ -80,13 +81,17 @@ def connect_cameras(camera_config, ic) -> List:
         connected_cameras.append(uniquename)
 
     # Check which cameras from config file are connected
-    missing_cameras = set(list(camera_config.keys())) - set(connected_cameras)
-    if len(missing_cameras) > 0:
-        print(f'Warning - cameras not connected: {missing_cameras}')
+    if camera_config is not None:
+        missing_cameras = set(list(camera_config.keys())) - set(connected_cameras)
+        if len(missing_cameras) > 0:
+            print(f'Warning - cameras not connected: {missing_cameras}')
 
     cameras = []
     for camera in connected_cameras:
-        channel = Channel(camera_config[camera], ic)
+        if camera_config is not None:
+            channel = Channel(camera, camera_config[camera], ic)
+        else:
+            channel = Channel(camera, None, ic)
         cameras.append(channel)
 
     return cameras
@@ -95,10 +100,77 @@ def configure_cameras(cameras: List) -> None:
     for camera in cameras:
         cam_num = camera.number
         print('-----------------------------------')
-        print(f'Device {cam_num}')
+        print(f'Device {cam_num} ({camera.name})')
         print('-----------------------------------')
         camera.set_defaults()
         print('-----------------------------------')
+
+def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
+    """Find the band number for each connected camera, and update the camera
+    proerpties dictionary.
+
+    :param connected_cameras: List of connected cameras, under serial number name
+    :type cameras: List
+    :param cameras: Camera properties dictionary
+    :type cameras: Dict
+    :return: Dictionary of camera properties, with serial number attached
+    :rtype: Dict
+    """
+    for camera in connected_cameras:
+        camera.ic.IC_StartLive(camera.grabber,1)
+        camera.ic.IC_MsgBox(tis.T('Find the band number by waving in front of each camera'), tis.T('Camera Configuration'))
+        camera.ic.IC_StopLive(camera.grabber,1)
+        band_number = input(prompt='Enter band number e.g. "3"')
+        band_label = f'Band{band_number}'
+        cameras[band_label]['serial'] = camera.name
+        cameras[camera.name] = cameras.pop(band_label)
+    return cameras
+
+def find_camera_rois(connected_cameras: List, cameras: Dict, roi_size: int=128) -> Dict:
+    """Find the ROI for each connected camera, and update the camera properties
+
+    :param connected_cameras: List of connected cameras, under serial number name
+    :type connected_cameras: List
+    :param cameras: Camera properties dictionary
+    :type cameras: Dict
+    :param roi_size: Size of region of interest, defaults to 128 pixels
+    :type roi_size: int, optional
+    :return: Camera properties dictionary
+    :rtype: Dict
+    """
+    size = 128 # size of ROI
+    for camera in connected_cameras:
+        img = camera.image_capture()
+        blurred = gaussian_filter(img, sigma=15)
+        cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
+        xlim = cntr[0]-int(size/2)
+        ylim = cntr[1]-int(size/2)
+        print(f'x: {xlim}')
+        print(f'y: {ylim}')
+        cameras[camera.name]['roix'] = xlim
+        cameras[camera.name]['roiy'] = ylim
+        cameras[camera.name]['roiw'] = size
+        cameras[camera.name]['roih'] = size
+        cam_num = cameras[camera.name]['number']
+        title = f'Band {cam_num} ({camera.name}) ROI Check'
+        camera.show_image(img, title)
+    return cameras
+
+def export_camera_config(cameras: Dict):
+    """Export the camera properties to a csv file.
+
+    :param cameras: Camera properties dictionary
+    :type cameras: Dict
+    """
+    cam_info = []
+    for camera in cameras:
+        cam_props = list(cameras[camera].values())
+        index = list(cameras[camera].keys())
+        cam_info.append(pd.Series(cam_props, index = index, name = camera))
+    cam_df = pd.concat(cam_info, axis=1)
+    cam_df.sort_values('number', axis=1, ascending=True, inplace=True)
+    camera_file = 'camera_config.csv'
+    cam_df.to_csv(camera_file)
 
 def prepare_reflectance_calibration(ic):
     title = 'Imaging Calibration Target'
@@ -223,10 +295,14 @@ def deviceLostCallback(hGrabber, userdata):
 class Channel:
     """Class for controlling a single camera channel.
     """
-    def __init__(self, camera_props, ic):
-        self.name = camera_props['serial']
-        self.number = camera_props['number']
-        self.camera_props = camera_props
+    def __init__(self, name, camera_props, ic):
+        self.name = name
+        if camera_props is not None:
+            self.number = camera_props['number']
+            self.camera_props = camera_props
+        else:
+            self.number = None
+            self.camera_props = None
         self.ic = ic
         self.grabber = ic.IC_CreateGrabber()
         self.connect()
