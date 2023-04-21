@@ -58,12 +58,31 @@ def connect_cameras(camera_config, ic) -> List:
     """Connect to available cameras, and return in a list of camera objects.
 
     :param cameras: camera configuration dictionary
-    :type cameras: Dict
+    :type cameras: DictS
     :param ic: image capture object
     :type ic: object
     :return: list of camera objects
     :rtype: List
     """
+    connected_cameras = get_connected_cameras(ic)
+
+    # Check which cameras from config file are connected
+    if camera_config is not None:
+        missing_cameras = set(list(camera_config.keys())) - set(connected_cameras)
+        if len(missing_cameras) > 0:
+            print(f'Warning - Scameras not connected: {missing_cameras}')
+
+    cameras = []
+    for camera in connected_cameras:
+        if camera_config is not None:
+            channel = Channel(camera, camera_config[camera], ic)
+        else:
+            channel = Channel(camera, None, ic)
+        cameras.append(channel)
+
+    return cameras
+
+def get_connected_cameras(ic) -> List:
     # Get a list of connected cameras
     connected_cameras = []
     devicecount = ic.IC_GetDeviceCount()
@@ -76,25 +95,12 @@ def connect_cameras(camera_config, ic) -> List:
         if bad_count >= 5:
             raise ConnectionError('No cameras connect. Abort script and try again.')
 
+    # Get serial names of connected cameras
     for i in range(0, devicecount):
         uniquename = tis.D(ic.IC_GetUniqueNamefromList(i))
         connected_cameras.append(uniquename)
 
-    # Check which cameras from config file are connected
-    if camera_config is not None:
-        missing_cameras = set(list(camera_config.keys())) - set(connected_cameras)
-        if len(missing_cameras) > 0:
-            print(f'Warning - cameras not connected: {missing_cameras}')
-
-    cameras = []
-    for camera in connected_cameras:
-        if camera_config is not None:
-            channel = Channel(camera, camera_config[camera], ic)
-        else:
-            channel = Channel(camera, None, ic)
-        cameras.append(channel)
-
-    return cameras
+    return connected_cameras
 
 def configure_cameras(cameras: List) -> None:
     for camera in cameras:
@@ -313,16 +319,16 @@ class Channel:
         """
         self.ic.IC_OpenDevByUniqueName(self.grabber, tis.T(self.name))
 
-        frameReadyCallbackfunc = self.ic.FRAMEREADYCALLBACK(frameReadyCallback)
-        userdata = CallbackUserdata()
-        devicelostcallbackfunc = self.ic.DEVICELOSTCALLBACK(deviceLostCallback)
+        # frameReadyCallbackfunc = self.ic.FRAMEREADYCALLBACK(frameReadyCallback)
+        # userdata = CallbackUserdata()
+        # devicelostcallbackfunc = self.ic.DEVICELOSTCALLBACK(deviceLostCallback)
 
-        userdata.devicename = f'{self.number} ({self.name})'
-        userdata.connected = True
+        # userdata.devicename = f'{self.number} ({self.name})'
+        # userdata.connected = True
 
-        self.ic.IC_SetCallbacks(self.grabber,
-                        frameReadyCallbackfunc, None,
-                        devicelostcallbackfunc, userdata)
+        # self.ic.IC_SetCallbacks(self.grabber,
+        #                 frameReadyCallbackfunc, None,
+        #                 devicelostcallbackfunc, userdata)
 
         # check the device is connected
         if self.ic.IC_IsDevValid(self.grabber):
@@ -330,7 +336,6 @@ class Channel:
         else:
             err_string = f'Camera {self.number} ({self.name}) did not connect'
             self.ic.IC_MsgBox( tis.T(err_string),tis.T("Connection Error"))
-
 
     def get_image_info(self) -> Tuple:
         """Get image info required for image capture
