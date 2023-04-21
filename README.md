@@ -41,10 +41,15 @@ First, ensure conda and conda develop are installed.
 Open a terminal, and navigate to the repository directory, and execute the following commands.
 
 To install an environment with the required packages:
-```S
+```
 conda env create -f environment.yml
 ```
 Once created, follow the prompt to activate the environment.
+
+If that fails, create a new environment manually with:
+```
+conda create -n orochi_sim_ctrl python=3.10 matplotlib numpy opencv pandas tifffile scipy
+```
 
 To add the path to tisgrabber to the conda environment:
 ```
