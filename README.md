@@ -49,6 +49,7 @@ Once created, follow the prompt to activate the environment.
 To add the path to tisgrabber to the conda environment:
 ```
 conda-develop ./tisgrabber/samples
+conda-develop ./src
 ```
 
 This is all that is required to setup the control software.
