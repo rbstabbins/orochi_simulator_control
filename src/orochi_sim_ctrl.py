@@ -6,6 +6,7 @@ Rikkyo University
 """
 
 import ctypes
+from datetime import date
 from pathlib import Path
 from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
@@ -51,10 +52,38 @@ def load_camera_config() -> Dict:
         'roix': int,
         'roiy': int,
         'roiw': int,
-        'roih': int}).T
+        'roih': int}).T.to_dict()
     return cameras
 
-def connect_cameras(camera_config, ic) -> List:
+def get_connected_cameras(ic) -> List:
+    """Get list of connected camera unique names (serial numbers)
+
+    :param ic: ImageCapture library
+    :type ic: Object
+    :raises ConnectionError: Fails to connect to cameras after 5 attempts
+    :return: connected camera unique device names (serial numbers).
+    :rtype: List
+    """
+    # Get a list of connected cameras
+    connected_cameras = []
+    devicecount = ic.IC_GetDeviceCount()
+    bad_count = 1
+    while devicecount == 0:
+        err_string = f'Attempt {bad_count}/5: No cameras connected - check connection and try again'
+        ic.IC_MsgBox( tis.T(err_string),tis.T("Connection Error"))
+        devicecount = ic.IC_GetDeviceCount()
+        bad_count +=1
+        if bad_count >= 5:
+            raise ConnectionError('No cameras connect. Abort script and try again.')
+
+    # Get serial names of connected cameras
+    for i in range(0, devicecount):
+        uniquename = tis.D(ic.IC_GetUniqueNamefromList(i))
+        connected_cameras.append(uniquename)
+
+    return connected_cameras
+
+def connect_cameras(ic, camera_config: Dict=None) -> List:
     """Connect to available cameras, and return in a list of camera objects.
 
     :param cameras: camera configuration dictionary
@@ -70,7 +99,7 @@ def connect_cameras(camera_config, ic) -> List:
     if camera_config is not None:
         missing_cameras = set(list(camera_config.keys())) - set(connected_cameras)
         if len(missing_cameras) > 0:
-            print(f'Warning - Scameras not connected: {missing_cameras}')
+            print(f'Warning - cameras not connected: {missing_cameras}')
 
     cameras = []
     for camera in connected_cameras:
@@ -82,27 +111,12 @@ def connect_cameras(camera_config, ic) -> List:
 
     return cameras
 
-def get_connected_cameras(ic) -> List:
-    # Get a list of connected cameras
-    connected_cameras = []
-    devicecount = ic.IC_GetDeviceCount()
-    bad_count = 1
-    while devicecount == 0:
-        err_string = f'{bad_count} / 5: No cameras connected - check connection and try again'
-        ic.IC_MsgBox( tis.T(err_string),tis.T("Connection Error"))
-        devicecount = ic.IC_GetDeviceCount()
-        bad_count +=1
-        if bad_count >= 5:
-            raise ConnectionError('No cameras connect. Abort script and try again.')
-
-    # Get serial names of connected cameras
-    for i in range(0, devicecount):
-        uniquename = tis.D(ic.IC_GetUniqueNamefromList(i))
-        connected_cameras.append(uniquename)
-
-    return connected_cameras
-
 def configure_cameras(cameras: List) -> None:
+    """Apply default settings to all cameras.
+
+    :param cameras: list of camera objects
+    :type cameras: List
+    """
     for camera in cameras:
         cam_num = camera.number
         print('-----------------------------------')
@@ -113,7 +127,7 @@ def configure_cameras(cameras: List) -> None:
 
 def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
     """Find the band number for each connected camera, and update the camera
-    proerpties dictionary.
+    properties dictionary.
 
     :param connected_cameras: List of connected cameras, under serial number name
     :type cameras: List
@@ -221,6 +235,7 @@ def find_channel_exposures(cameras: List, init_t_exp=1.0/100, target=150, n_hot=
                       tol, limit, roi)
         exposures[camera.name] = exposure
         print('-----------------------------------')
+    return exposures
 
 def capture_channel_images(cameras: List, exposures: Dict, subject: str='test',
                            img_type: str='img', repeats: int=1, roi=False,
@@ -265,9 +280,9 @@ def record_exposures(cameras, exposures, subject) -> None:
     for camera in cameras:
         cwl_str = str(int(camera.camera_props['cwl']))
         channel = str(camera.camera_props['number'])+'_'+cwl_str
-        target_dir = Path(subject, channel)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        filename = Path(target_dir, 'exposure_seconds.txt')
+        subject_dir = Path('..', 'data', subject, channel)
+        subject_dir.mkdir(parents=True, exist_ok=True)
+        filename = Path(subject_dir, 'exposure_seconds.txt')
         with open(filename, 'w') as f:
                 t_exp = str(exposures[camera.name])
                 f.write(t_exp)
@@ -312,6 +327,7 @@ class Channel:
         self.ic = ic
         self.grabber = ic.IC_CreateGrabber()
         self.connect()
+        self.init_camera_stream()
         self.width, self.height, self.buffer_size, self.bpp = self.get_image_info()
 
     def connect(self):
@@ -319,16 +335,16 @@ class Channel:
         """
         self.ic.IC_OpenDevByUniqueName(self.grabber, tis.T(self.name))
 
-        # frameReadyCallbackfunc = self.ic.FRAMEREADYCALLBACK(frameReadyCallback)
-        # userdata = CallbackUserdata()
-        # devicelostcallbackfunc = self.ic.DEVICELOSTCALLBACK(deviceLostCallback)
+        frameReadyCallbackfunc = self.ic.FRAMEREADYCALLBACK(frameReadyCallback)
+        userdata = CallbackUserdata()
+        devicelostcallbackfunc = self.ic.DEVICELOSTCALLBACK(deviceLostCallback)
 
-        # userdata.devicename = f'{self.number} ({self.name})'
-        # userdata.connected = True
+        userdata.devicename = f'{self.number} ({self.name})'
+        userdata.connected = True
 
-        # self.ic.IC_SetCallbacks(self.grabber,
-        #                 frameReadyCallbackfunc, None,
-        #                 devicelostcallbackfunc, userdata)
+        self.ic.IC_SetCallbacks(self.grabber,
+                        frameReadyCallbackfunc, None,
+                        devicelostcallbackfunc, userdata)
 
         # check the device is connected
         if self.ic.IC_IsDevValid(self.grabber):
@@ -336,6 +352,13 @@ class Channel:
         else:
             err_string = f'Camera {self.number} ({self.name}) did not connect'
             self.ic.IC_MsgBox( tis.T(err_string),tis.T("Connection Error"))
+
+    def init_camera_stream(self) -> None:
+        """Initialise the camera and check the live video stream.
+        """
+        self.ic.IC_StartLive(self.grabber, 1)
+        self.ic.IC_MsgBox(tis.T("Camera Stream Check: Click OK to stop"), tis.T("Initialising Camera Feed"))
+        self.ic.IC_StopLive(self.grabber)
 
     def get_image_info(self) -> Tuple:
         """Get image info required for image capture
@@ -353,6 +376,9 @@ class Channel:
 
         bpp = int(bits.value / 8.0)
         buffer_size = width.value * height.value * bits.value
+
+        if width.value == height.value == buffer_size == bpp == 0:
+            print('Warning - information 0 - open and close a video stream to initialise camera (Channel.init_camera_stream())')
 
         return width.value, height.value, buffer_size, bpp
 
@@ -440,26 +466,74 @@ class Channel:
         self.set_property('Strobe', 'Enable', 0, 'Switch')
         self.set_property('Auto Functions ROI', 'Enabled', 0, 'Switch')
 
-    def get_property(self, property: str, element: str, interface: str):
+    def get_property(self, property: str, element: str, interface: str, print_state: bool=False):
         """Get the current value of a camera property."""
 
-        container = ctypes.c_float()
-        ret = self.ic.IC_GetPropertyAbsoluteValue(
+        # container = ctypes.c_float()
+        # ret = self.ic.IC_GetPropertyAbsoluteValue(
+        #         self.grabber,
+        #         tis.T(property),
+        #         tis.T("Value"), container)
+
+        if interface == 'Value':
+            get_property_func = self.ic.IC_GetPropertyValue
+            container = ctypes.c_long()
+        elif interface == 'AbsoluteValue':
+            get_property_func = self.ic.IC_GetPropertyAbsoluteValue
+            container = ctypes.c_float()
+        elif interface == 'AbsoluteValueRange':
+            get_property_func = self.ic.IC_GetPropertyAbsoluteValueRange
+            container = ctypes.c_float()
+        elif interface == 'Switch':
+            get_property_func = self.ic.IC_GetPropertySwitch
+            container = ctypes.c_int()
+        elif interface == 'MapStrings':
+            get_property_func = self.ic.IC_GetPropertyMapStrings
+            container = ctypes.c_char()
+        elif interface == 'Button':
+            get_property_func = self.ic.IC_GetPropertyOnePush
+            container = ctypes.c_int()
+
+        ret = get_property_func(
                 self.grabber,
                 tis.T(property),
-                tis.T("Value"), container)
+                tis.T(element), container)
+
         if ret == 1:
-            # print(f'{property} current {element}: {container.value}')
+            print(f'{property} current {element}: {container.value}')
             return container.value
         elif ret == -2:
             raise ValueError('No video capture device opened')
         elif ret == -4:
-            raise ValueError('Property item is not available')
+            raise ValueError(f'{property} item is not available')
         elif ret == -5:
-            raise ValueError('Property item element is not available')
+            raise ValueError(f'{property} item {element} is not available')
         elif ret == -6:
-            raise ValueError('Requested element has no interface')
+            raise ValueError(f'{property} item {element} ({interface}) has no interface')
         return container.value
+
+    def get_current_state(self):
+        """Get the current property values of the camera.
+        """
+        self.get_property('Brightness', 'Value', 'Value', True)
+        self.get_property('Contrast', 'Value', 'Value', True)
+        self.get_property('Sharpness', 'Value', 'Value', True)
+        self.get_property('Gamma', 'Value', 'Value', True)
+        self.get_property('Gain', 'Value', 'AbsoluteValue', True)
+        self.get_property('Gain', 'Auto', 'Switch', True)
+        self.get_property('Exposure', 'Value', 'AbsoluteValue', True)
+        self.get_property('Exposure', 'Auto', 'Switch', True)
+        self.get_property('Exposure', 'Auto Reference', 'Value', True)
+        self.get_property('Exposure', 'Auto Max Value', 'AbsoluteValue', True)
+        self.get_property('Exposure', 'Auto Max Auto', 'Switch', True)
+        self.get_property('Trigger', 'Enable', 'Switch', True)
+        self.get_property('Denoise', 'Value', 'Value', True)
+        self.get_property('Flip Horizontal', 'Enable', 'Switch', True)
+        self.get_property('Flip Vertical', 'Enable', 'Switch', True)
+        self.get_property('Highlight Reduction', 'Enable', 'Switch', True)
+        self.get_property('Tone Mapping', 'Enable', 'Switch', True)
+        self.get_property('Strobe', 'Enable', 'Switch', True)
+        self.get_property('Auto Functions ROI', 'Enabled', 'Switch', True)
 
     def image_capture(self, roi=False) -> np.ndarray:
         """Capture a single image from the camera.
@@ -499,6 +573,7 @@ class Channel:
         plt.imshow(img_arr, origin='lower')
         plt.title(title)
         plt.colorbar()
+        plt.show()
 
     def find_exposure(self, init_t_exp=1.0/100, target=150, n_hot=10,
                       tol=1, limit=5, roi=True) -> float:
@@ -566,14 +641,14 @@ class Channel:
             'f-length': self.camera_props['flength'],
             'exposure': exposure,
             'image-type': img_type, # image or dark frame or averaged stack
-            'target': subject
+            'subject': subject
         }
         cwl_str = str(int(self.camera_props['cwl']))
         channel = str(self.camera_props['number'])+'_'+cwl_str
-        target_dir = Path(subject, channel)
-        target_dir.mkdir(parents=True, exist_ok=True)
+        subject_dir = Path('..', 'data', subject, channel)
+        subject_dir.mkdir(parents=True, exist_ok=True)
         filename = cwl_str+'_'+name+'_'+img_type
-        img_file =str(Path(target_dir, filename).with_suffix('.tif'))
+        img_file =str(Path(subject_dir, filename).with_suffix('.tif'))
         # write camera properties to TIF using ImageJ metadata
         tiff.imwrite(img_file, img_arr, imagej=True, metadata=metadata)
         print(f'Image {name} written to {img_file}')
