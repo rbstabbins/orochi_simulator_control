@@ -8,6 +8,7 @@ Rikkyo University
 import ctypes
 from datetime import date
 from pathlib import Path
+import time
 from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
@@ -123,6 +124,7 @@ def configure_cameras(cameras: List) -> None:
         print(f'Device {cam_num} ({camera.name})')
         print('-----------------------------------')
         camera.set_defaults()
+        camera.get_current_state()
         print('-----------------------------------')
 
 def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
@@ -146,47 +148,45 @@ def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
         cameras[camera.name] = cameras.pop(band_label)
     return cameras
 
-def find_camera_rois(connected_cameras: List, cameras: Dict, roi_size: int=128) -> Dict:
+def find_camera_rois(cameras: List, roi_size: int=128):
     """Find the ROI for each connected camera, and update the camera properties
 
-    :param connected_cameras: List of connected cameras, under serial number name
-    :type connected_cameras: List
-    :param cameras: Camera properties dictionary
-    :type cameras: Dict
+    :param cameras: List of connected cameras, under serial number name
+    :type cameras: List
     :param roi_size: Size of region of interest, defaults to 128 pixels
     :type roi_size: int, optional
-    :return: Camera properties dictionary
-    :rtype: Dict
     """
-    size = 128 # size of ROI
-    for camera in connected_cameras:
+    for camera in cameras:
         img = camera.image_capture()
-        blurred = gaussian_filter(img, sigma=15)
+        blurred = gaussian_filter(img, sigma=30)
         cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
-        xlim = cntr[0]-int(size/2)
-        ylim = cntr[1]-int(size/2)
+        xlim = cntr[0]-int(roi_size/2)
+        ylim = cntr[1]-int(roi_size/2)
         print(f'x: {xlim}')
         print(f'y: {ylim}')
-        cameras[camera.name]['roix'] = xlim
-        cameras[camera.name]['roiy'] = ylim
-        cameras[camera.name]['roiw'] = size
-        cameras[camera.name]['roih'] = size
-        cam_num = cameras[camera.name]['number']
-        title = f'Band {cam_num} ({camera.name}) ROI Check'
+        camera.camera_props['roix'] = xlim
+        camera.camera_props['roiy'] = ylim
+        camera.camera_props['roiw'] = roi_size
+        camera.camera_props['roih'] = roi_size
+        cam_num = camera.camera_props['number']
+        title = f'Band {cam_num} ({camera.name}) ROI Check: Context'
         camera.show_image(img, title)
-    return cameras
+        img = camera.image_capture(roi=True)
+        title = f'Band {cam_num} ({camera.name}) ROI Check: ROI'
+        camera.show_image(img, title)
+    export_camera_config(cameras)
 
-def export_camera_config(cameras: Dict):
+def export_camera_config(cameras: List):
     """Export the camera properties to a csv file.
 
-    :param cameras: Camera properties dictionary
-    :type cameras: Dict
+    :param cameras: Connected cameras
+    :type cameras: List
     """
     cam_info = []
     for camera in cameras:
-        cam_props = list(cameras[camera].values())
-        index = list(cameras[camera].keys())
-        cam_info.append(pd.Series(cam_props, index = index, name = camera))
+        cam_props = list(camera.camera_props.values())
+        index = list(camera.camera_props.keys())
+        cam_info.append(pd.Series(cam_props, index = index, name = camera.name))
     cam_df = pd.concat(cam_info, axis=1)
     cam_df.sort_values('number', axis=1, ascending=True, inplace=True)
     camera_file = 'camera_config.csv'
@@ -218,7 +218,7 @@ def prepare_dark_acquisition(ic):
     msg = 'Check Lens Caps are in place'
     ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
-def find_channel_exposures(cameras: List, init_t_exp=1.0/100, target=150, n_hot=10,
+def find_channel_exposures(cameras: List, init_t_exp=1.0/500, target=150, n_hot=10,
                       tol=1, limit=5, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
 
@@ -236,6 +236,23 @@ def find_channel_exposures(cameras: List, init_t_exp=1.0/100, target=150, n_hot=
         exposures[camera.name] = exposure
         print('-----------------------------------')
     return exposures
+
+def check_channel_linearity(cameras: List, n_exp: int=50) -> None:
+    """Check the channel linearity.
+
+    :param cameras: List of connected camera objects
+    :type cameras: List
+    :param n_exp: Number of exposure steps to take, defaults to 50
+    :type n_exp: int, optional
+    """
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        camera.simple_linearity_check(n_exp)
+        print('-----------------------------------')
+
 
 def capture_channel_images(cameras: List, exposures: Dict, subject: str='test',
                            img_type: str='img', repeats: int=1, roi=False,
@@ -287,6 +304,57 @@ def record_exposures(cameras, exposures, subject) -> None:
                 t_exp = str(exposures[camera.name])
                 f.write(t_exp)
 
+def set_focus(cameras) -> None:
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        camera.ic.IC_StartLive(camera.grabber, 1)
+        title = f'{cam_num} Focus Calibration'
+        msg = f'Adjust Focus for Device {cam_num}'
+        camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
+        camera.ic.IC_StopLive(camera.grabber)
+        print('-----------------------------------')
+
+def set_f_numbers(cameras) -> None:
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        target_f_number = camera.camera_props['fnumber']
+        calibration_f_number = 1.4
+        # get exposure for given f_number
+        t_exp_cali = camera.find_exposure(tol=0.5,roi=True)
+        # compute exposure for target f_number
+        t_exp_target = t_exp_cali *  target_f_number**2 / calibration_f_number**2
+        t_exp = t_exp_cali
+        searching = True
+        while searching:
+            title = f'{cam_num} F-Number Calibration'
+            factor = np.sqrt(t_exp_target/t_exp)
+            msg = f'Adjust f-number by x{factor} to get f/{target_f_number}, {t_exp_target} s exposure'
+            camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
+            t_exp = camera.find_exposure(tol=0.5,roi=True)
+            if np.isclose(t_exp, t_exp_target, atol=0.0, rtol=0.02):
+                print('Success!')
+                searching = False
+        print('-----------------------------------')
+
+def load_exposures(cameras, subject) -> Dict:
+    subject_dir = Path('..', 'data', subject)
+    channels = subject_dir.glob('*')
+    exposures = {}
+    cam_lut = {str(c.number): c.name for c in cameras}
+    for channel in channels:
+        filename = Path(channel, 'exposure_seconds.txt')
+        cam_num = channel.name.split('_')[0]
+        cam_name = cam_lut[cam_num]
+        with open(filename, 'r') as f:
+            exposures[cam_name] = float(f.read())
+    return exposures
+
 def disconnect_cameras(cameras: List) -> None:
     for camera in cameras:
         camera.ic.IC_ReleaseGrabber(camera.grabber)
@@ -335,16 +403,16 @@ class Channel:
         """
         self.ic.IC_OpenDevByUniqueName(self.grabber, tis.T(self.name))
 
-        frameReadyCallbackfunc = self.ic.FRAMEREADYCALLBACK(frameReadyCallback)
-        userdata = CallbackUserdata()
-        devicelostcallbackfunc = self.ic.DEVICELOSTCALLBACK(deviceLostCallback)
+        # frameReadyCallbackfunc = self.ic.FRAMEREADYCALLBACK(frameReadyCallback)
+        # userdata = CallbackUserdata()
+        # devicelostcallbackfunc = self.ic.DEVICELOSTCALLBACK(deviceLostCallback)
 
-        userdata.devicename = f'{self.number} ({self.name})'
-        userdata.connected = True
+        # userdata.devicename = f'{self.number} ({self.name})'
+        # userdata.connected = True
 
-        self.ic.IC_SetCallbacks(self.grabber,
-                        frameReadyCallbackfunc, None,
-                        devicelostcallbackfunc, userdata)
+        # self.ic.IC_SetCallbacks(self.grabber,
+        #                 frameReadyCallbackfunc, None,
+        #                 devicelostcallbackfunc, userdata)
 
         # check the device is connected
         if self.ic.IC_IsDevValid(self.grabber):
@@ -356,8 +424,8 @@ class Channel:
     def init_camera_stream(self) -> None:
         """Initialise the camera and check the live video stream.
         """
-        self.ic.IC_StartLive(self.grabber, 1)
-        self.ic.IC_MsgBox(tis.T("Camera Stream Check: Click OK to stop"), tis.T("Initialising Camera Feed"))
+        self.ic.IC_StartLive(self.grabber, 0)
+        # self.ic.IC_MsgBox(tis.T("Camera Stream Check: Click OK to stop"), tis.T("Initialising Camera Feed"))
         self.ic.IC_StopLive(self.grabber)
 
     def get_image_info(self) -> Tuple:
@@ -382,7 +450,7 @@ class Channel:
 
         return width.value, height.value, buffer_size, bpp
 
-    def set_property(self, property: str, element: str, value, interface: str):
+    def set_property(self, property: str, element: str, value, interface: str, wait: float=0.0):
         """Update the camera on-board property.
 
         :param property: property to update
@@ -422,6 +490,10 @@ class Channel:
                 property.encode("utf-8"),
                 element.encode("utf-8"),
                 value)
+
+        # wait for some time for the property to update
+        time.sleep(wait)
+
         if ret == 1:
             print(f'{property} {element} set to {value.value}')
         elif ret == -2:
@@ -432,6 +504,16 @@ class Channel:
             raise ValueError(f'{property} item {element} is not available')
         elif ret == -6:
             raise ValueError(f'{property} {element} has no interface')
+        else:
+            raise ValueError(f'{property} {element} unidentified error')
+
+    def set_frame_rate(self, rate: float) -> int:
+        print(f'Setting Frame Rate to : {rate} FPS')
+        ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(rate)) # set frame rate to 30 FPS
+        print(f'set frame rate err: {ret}')
+        set_rate = self.ic.IC_GetFrameRate(self.grabber)
+        print(f'Frame Rate set to : {set_rate} FPS')
+        return ret
 
     def set_defaults(self, exposure=1.0/100, auto_exposure=1, black_level=26):
         """Set default properties for each camera.
@@ -444,6 +526,10 @@ class Channel:
             26 (10% of the range, for linearity)
         :type black_level: int, optional
         """
+        self.ic.IC_SetVideoFormat(self.grabber, tis.T("Y800 (1920x1200)"))
+        print(f'Color Format set to : "Y800 (1920x1200)"')
+        ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(30.0)) # set frame rate to 30 FPS
+        print(f'Frame Rate set to : {30.0} FPS')
         # brightness is Black Level in DN for the 12-bit range of the detector.
         black_level = black_level*2**4 # convert from 8-bit to 12-bit
         self.set_property('Brightness', 'Value', black_level, 'Range')
@@ -455,7 +541,7 @@ class Channel:
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
         self.set_property('Exposure', 'Auto Reference', 80, 'Range')
-        self.set_property('Exposure', 'Auto Max Value', 2.0, 'AbsoluteValue')
+        self.set_property('Exposure', 'Auto Max Value', 10.0, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto Max Auto', 0, 'Switch')
         self.set_property('Trigger', 'Enable', 0, 'Switch')
         self.set_property('Denoise', 'Value', 0, 'Range')
@@ -468,12 +554,6 @@ class Channel:
 
     def get_property(self, property: str, element: str, interface: str, print_state: bool=False):
         """Get the current value of a camera property."""
-
-        # container = ctypes.c_float()
-        # ret = self.ic.IC_GetPropertyAbsoluteValue(
-        #         self.grabber,
-        #         tis.T(property),
-        #         tis.T("Value"), container)
 
         if interface == 'Value':
             get_property_func = self.ic.IC_GetPropertyValue
@@ -512,9 +592,43 @@ class Channel:
             raise ValueError(f'{property} item {element} ({interface}) has no interface')
         return container.value
 
+    def get_exposure_range(self) -> Tuple:
+        """Get the allowed range of exposures
+
+        :return: Minimum and maximum allowed exposure (s)
+        :rtype: Tuple
+        """
+        expmin = ctypes.c_float()
+        expmax = ctypes.c_float()
+        self.ic.IC_GetPropertyAbsoluteValueRange(self.grabber, tis.T("Exposure"), tis.T("Value"),
+                                        expmin, expmax)
+        print("Exposure range is {0} - {1}".format(expmin.value, expmax.value))
+
+        return expmin.value, expmax.value
+
+    def get_exposure_value(self) -> float:
+        """Get the exposure time used.
+
+        :return: Exposure (s)
+        :rtype: float
+        """
+        container = ctypes.c_float()
+        self.ic.IC_GetPropertyAbsoluteValue(self.grabber,
+                                            tis.T("Exposure"),
+                                            tis.T("Value"),
+                                            container)
+        t_exp = container.value
+        return t_exp
+
     def get_current_state(self):
         """Get the current property values of the camera.
         """
+        # Get the frame rate and color mode
+        fmt = self.ic.IC_GetFormat(self.grabber)
+        print(f'Color Format: {fmt}')
+        fr = self.ic.IC_GetFrameRate(self.grabber)
+        print(f'Frame Rate: {fr}')
+        #tis.SinkFormats()
         self.get_property('Brightness', 'Value', 'Value', True)
         self.get_property('Contrast', 'Value', 'Value', True)
         self.get_property('Sharpness', 'Value', 'Value', True)
@@ -543,39 +657,44 @@ class Channel:
         :return: image data
         :rtype: np.ndarray
         """
-        self.ic.IC_StartLive(self.grabber,1)
-        self.ic.IC_SnapImage(self.grabber, 2000) == tis.IC_SUCCESS
-        self.ic.IC_StopLive(self.grabber,1)
+        # self.get_current_state()
+        self.ic.IC_StartLive(self.grabber,0)
+        wait_time = 10000 # time in ms to wait to receive frame
+        if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
+            # Get the image data
+            imagePtr = self.ic.IC_GetImagePtr(self.grabber)
 
-        # Get the image data
-        imagePtr = self.ic.IC_GetImagePtr(self.grabber)
+            imagedata = ctypes.cast(imagePtr,
+                                    ctypes.POINTER(ctypes.c_ubyte *
+                                                self.buffer_size))
 
-        imagedata = ctypes.cast(imagePtr,
-                                ctypes.POINTER(ctypes.c_ubyte *
-                                            self.buffer_size))
+            # Create the numpy array
+            image = np.ndarray(buffer=imagedata.contents,
+                            dtype=np.uint8,
+                            shape=(self.height, self.width, self.bpp))
 
-        # Create the numpy array
-        image = np.ndarray(buffer=imagedata.contents,
-                        dtype=np.uint8,
-                        shape=(self.height, self.width, self.bpp))
-
-        if roi:
-            x = self.camera_props['roix']
-            y = self.camera_props['roiy']
-            w = self.camera_props['roiw']
-            h = self.camera_props['roih']
-            image = image[x:x+w,y:y+h,0]
+            if roi:
+                x = self.camera_props['roix']
+                y = self.camera_props['roiy']
+                w = self.camera_props['roiw']
+                h = self.camera_props['roih']
+                image = image[x:x+w,y:y+h,0]
+            else:
+                image = image[:,:,0]
         else:
-            image = image[:,:,0]
+            print(f'No image recieved in {wait_time} ms')
+        self.ic.IC_StopLive(self.grabber)
         return image
 
     def show_image(self, img_arr, title):
-        plt.imshow(img_arr, origin='lower')
-        plt.title(title)
-        plt.colorbar()
+        fig, ax = plt.subplots(figsize=(5.8, 4.1))
+        disp = ax.imshow(img_arr, origin='lower')
+        ax.set_title(title)
+        plt.colorbar(disp, ax=ax)
+        plt.tight_layout()
         plt.show()
 
-    def find_exposure(self, init_t_exp=1.0/100, target=150, n_hot=10,
+    def find_exposure(self, init_t_exp=1.0/500, target=150, n_hot=10,
                       tol=1, limit=5, roi=True) -> float:
         """Find the optimal exposure time for a given peak target value.
 
@@ -600,15 +719,18 @@ class Channel:
 
         # ensure exposure setting is manual
         print('Initiating search:')
-        self.set_property('Exposure', 'Value', init_t_exp, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto', 0, 'Switch')
+        self.set_property('Exposure', 'Value', init_t_exp, 'AbsoluteValue')
+        t_min, t_max = 0.000065, 50.0 # self.get_exposure_range()
 
         while searching == True:
             print(f'Trial {trial_n}:')
             img_arr = self.image_capture(roi) # capture the image
-            k = 1 - n_hot/img_arr.size
+            k = 1 - n_hot/(img_arr.size)
             k_quantile = np.round(np.quantile(img_arr, k)) # evaluate the quantile
-            success = target - k_quantile <= tol # check against target
+            distance = np.abs(target - k_quantile)
+            success = distance <= tol # check against target
+            print(f'Quantile: {k_quantile}, Target: {target}')
 
             if success == True:
                 print(f'Success after {trial_n} trials')
@@ -616,10 +738,24 @@ class Channel:
                 searching = False # update searcing or continue
                 return t_exp
 
-            t_exp_scale = target / k_quantile # get the scaling factor
+            if k_quantile >= 255:
+                k_quantile = 5*k_quantile
+            elif k_quantile <= 26:
+                k_quantile = k_quantile/5
+            t_exp_scale = float(target) / float(k_quantile) # get the scaling factor
             last_t_exp = self.get_property('Exposure', 'Value', 'AbsoluteValue')
             new_t_exp = t_exp_scale * last_t_exp# scale the exposure
+            # check the exposure is in range
+            if new_t_exp < t_min:
+                print(f'Exposure out of range. Setting to {t_min}')
+                new_t_exp = t_min
+            elif new_t_exp > t_max:
+                print(f'Exposure out of range. Setting to {t_max}')
+                new_t_exp = t_max
             self.set_property('Exposure', 'Value', new_t_exp, 'AbsoluteValue')
+            # check that the exposure has been set
+            set_t_exp = self.get_exposure_value()
+            print(f'Exposure set to {set_t_exp} (err of {new_t_exp - set_t_exp}')
             trial_n+=1 # increment the counter
             failure = trial_n > limit
 
@@ -628,6 +764,52 @@ class Channel:
                 t_exp = self.get_property('Exposure', 'Value', 'AbsoluteValue')
                 searching = False
                 return t_exp
+
+    def simple_linearity_check(self, n_exp: int=50) -> None:
+        """Run a simple program to check linearity, by imaging the
+        reflectance calibration target at step exposures from minimum
+        up to saturation.
+
+        :param n_exp: number of exposure steps to use, defaults to 50
+        :type n_exp: int, optional
+        """
+        self.set_property('Exposure', 'Auto', 0, 'Switch')
+        # set the minimum exposure as initial
+        t_min = 6.5E-5
+        t_exp = t_min
+        # set the saturation limit
+        sat_limit = 200
+        mean = 0
+
+        t_exps = []
+        means = []
+        count = 0
+        factor = 2.0
+        while count < n_exp:
+            # set exposure
+            if t_exp < t_min:
+                t_exp = t_min
+            self.set_property('Exposure', 'Value', t_exp, 'AbsoluteValue', wait=1.0)
+            # capture image
+            img = self.image_capture(roi=True)
+            # get estimate of mean over target ROI
+            mean = np.mean(img)
+            print(f'Mean Signal: {mean} DN')
+            # record t_exp, record mean
+            t_exps.append(t_exp)
+            means.append(mean)
+            # set next exposure
+            t_exp = factor*t_exp
+            # update counter
+            if mean >=sat_limit:
+                factor = 0.9
+            count+=1
+        data = pd.DataFrame(data={'t_exp': t_exps, 'mean': means})
+        data.sort_values('t_exp', inplace=True)
+        data.plot('t_exp', 'mean', logx=True, logy=True)
+        plt.show()
+        data.plot('t_exp', 'mean')
+        plt.show()
 
     def save_image(self, name, subject, img_type, img_arr):
 
