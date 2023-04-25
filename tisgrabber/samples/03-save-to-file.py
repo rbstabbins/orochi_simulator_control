@@ -1,12 +1,12 @@
 """
-This sample shows, how to create an XML configuration file 
+This sample shows, how to create an XML configuration file
 for a video capture device.
 """
 
 import ctypes
 import tisgrabber as tis
 
-ic = ctypes.cdll.LoadLibrary("./tisgrabber_x64.dll")
+ic = ctypes.cdll.LoadLibrary("./tisgrabber/samples/tisgrabber_x64.dll")
 tis.declareFunctions(ic)
 
 ic.IC_InitLibrary(0)
