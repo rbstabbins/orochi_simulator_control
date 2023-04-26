@@ -14,6 +14,8 @@ from typing import Tuple
 import orochi_sim_ctrl as osc
 
 class Image:
+    """Super class for handling image import and export.
+    """
     def __init__(self, subject: str, channel: str, img_type: str) -> None:
         """Initialise properties. Most of these are populated during image load.
         """
@@ -88,7 +90,20 @@ class Image:
         # std. stack
         self.img_std = np.std(self.img_stk, axis=2)
 
+    def roi_image(self) -> np.ndarray:
+        """Returns the region of interest of the image.
+        """
+        return self.img_ave[self.roix:self.roix+self.roiw,
+                            self.roiy:self.roiy+self.roih]
+
+    def roi_std(self) -> np.ndarray:
+        """Returns the region of interest of the error image.
+        """
+        return self.img_std[self.roix:self.roix+self.roiw,
+                            self.roiy:self.roiy+self.roih]
+
     def check_property(self, obj_prop, metadata):
+        """Check that the metadata for a given image property is consistent"""
         obj_set = obj_prop != None
         if isinstance(obj_prop, float):
             obj_meta_match = np.allclose(obj_prop, metadata, equal_nan=True)
@@ -108,7 +123,7 @@ class Image:
 
         self.img_stk = self.img_stk / self.exposure
         self.img_ave = self.img_ave / self.exposure
-        self.img_std = self.img_std / self.exposure # assume exposure error is negligible
+        self.img_std = self.img_std / self.exposure # assume exposure err. negl.
         self.units = 'DN/s'
 
     def image_stats(self) -> None:
@@ -119,18 +134,33 @@ class Image:
         img_std_mean = np.mean(self.img_std)
         print(f'Noise Image Mean: {img_std_mean} {self.units}')
 
-    def image_display(self) -> None:
+    def image_display(self, roi: bool=False) -> None:
         """Display the image mean and standard deviation in one frame.
         """
+        if self.img_type == 'rfl':
+            vmin = 0.0
+            vmax = 0.1
+        else:
+            vmin = None
+            vmax = None
         # set the size of the window for the two images
-        fig, ax = plt.subplots(nrows=2, ncols=1, sharey=True, sharex=True,figsize=(5.5, 5.8))
+        fig, ax = plt.subplots(
+            nrows=2, ncols=1, sharey=True, sharex=True,figsize=(5.5, 5.8))
         fig.suptitle(f'subject: {self.subject}, Channel: {self.channel}')
         # put the mean frame in
-        ave = ax[0].imshow(self.img_ave, origin='lower')
+        if roi:
+            img = self.roi_image()
+        else:
+            img = self.img_ave
+        ave = ax[0].imshow(img, origin='lower', vmin=vmin, vmax=vmax)
         plt.colorbar(ave, ax=ax[0], label=self.units)
         ax[0].set_title('Image Average')
         # put the std frame in
-        std = ax[1].imshow(self.img_std, origin='lower')
+        if roi:
+            img_std = self.roi_std()
+        else:
+            img_std = self.img_std
+        std = ax[1].imshow(img_std, origin='lower')
         ax[1].set_title('Image Std. Dev.')
         plt.colorbar(std, ax=ax[1], label=self.units)
         # show
@@ -139,6 +169,7 @@ class Image:
         # TODO add histograms
 
     def save_tiff(self, save_stack: bool=False):
+        """Save the average and error images to TIF files"""
         metadata={
             'subject': self.subject,
             'image-type': self.img_type,
@@ -159,26 +190,31 @@ class Image:
         filename = cwl_str+'_'+name+'_'+self.img_type
         img_file =str(Path(self.dir, filename).with_suffix('.tif'))
         # write camera properties to TIF using ImageJ metadata
-        tiff.imwrite(img_file, self.img_ave.astype(np.float32), imagej=True, metadata=metadata)
+        out_img = self.img_ave.astype(np.float32)
+        tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
         print(f'Mean image written to {img_file}')
 
-        # average image
+        # error image
         name = 'error'
         filename = cwl_str+'_'+name+'_'+self.img_type
         img_file =str(Path(self.dir, filename).with_suffix('.tif'))
         # write camera properties to TIF using ImageJ metadata
-        tiff.imwrite(img_file, self.img_std.astype(np.float32), imagej=True, metadata=metadata)
+        out_img = self.img_std.astype(np.float32)
+        tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
         print(f'Error image written to {img_file}')
 
 
 class DarkImage(Image):
+    """Class for handling Dark Images, inherits Image class.
+    """
     def __init__(self, subject: str, channel: str) -> None:
         Image.__init__(self,subject, channel, 'drk')
         self.dark = None
         self.dsnu = None
 
     def dark_signal(self) -> Tuple:
-        """Return the mean dark signal (DARK) and Dark Signal Nonuniformity (DSNU)
+        """Return the mean dark signal (DARK) and Dark Signal Nonuniformity
+        (DSNU)
 
         :return: DARK, DSNU
         :rtype: Tuple
@@ -189,6 +225,7 @@ class DarkImage(Image):
 
 
 class LightImage(Image):
+    """Class for handling Light Images, inherits Image class."""
     def __init__(self, subject: str, channel: str) -> None:
         Image.__init__(self,subject, channel, 'img')
 
@@ -197,11 +234,14 @@ class LightImage(Image):
         self.img_stk -= dark_image.img_stk
         self.img_ave -= dark_image.img_ave
         # quadrture sum the image noise with the dark signal noise
-        self.img_std = self.img_ave * np.sqrt((self.img_std/lst_ave)**2 + (dark_image.img_std/dark_image.img_ave)**2)
+        lght_err = self.img_std/lst_ave
+        drk_err = dark_image.img_std/dark_image.img_ave
+        self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (drk_err)**2)
         self.units = 'Above-Bias Signal DN'
 
 
 class CalibrationImage(Image):
+    """Class for handling Calibration Images, inherits Image class."""
     def __init__(self, source_image: LightImage) -> None:
         self.dir = source_image.dir
         # TODO check subject directory exists
@@ -253,11 +293,14 @@ class CalibrationImage(Image):
         lst_ave = self.img_ave.copy()
         self.img_stk = self.reference_reflectance / self.img_stk
         self.img_ave = self.reference_reflectance / self.img_ave
-        self.img_std = self.img_ave * np.sqrt((self.img_std/lst_ave)**2 + (self.reference_reflectance_err/self.reference_reflectance)**2)
+        lght_err = self.img_std/lst_ave
+        ref_err = self.reference_reflectance_err/self.reference_reflectance
+        self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (ref_err)**2)
         self.units = 'Refl. Coeffs. 1/DN/s'
 
 
 class ReflectanceImage(Image):
+    """Class for handling Reflectance Images, inherits Image class."""
     def __init__(self, source_image: LightImage) -> None:
         self.dir = source_image.dir
         # TODO check subject directory exists
@@ -287,85 +330,16 @@ class ReflectanceImage(Image):
         lst_ave = self.img_ave.copy()
         self.img_ave = self.img_ave * cali_source.img_ave
         self.units = 'Reflectance'
-        self.img_std = self.img_ave * np.sqrt((self.img_std/lst_ave)**2 + (cali_source.img_std/cali_source.img_ave)**2)
-
-
-class GeoCalImage(Image):
-    def __init__(self, source_image: LightImage, roi: bool=False) -> None:
-        self.dir = source_image.dir
-        # TODO check subject directory exists
-        self.subject = source_image.subject
-        self.channel = source_image.channel
-        self.img_type = 'geo'
-        self.camera = source_image.camera
-        self.serial = source_image.serial
-        self.width = source_image.width
-        self.height = source_image.height
-        self.cwl = source_image.cwl
-        self.fwhm = source_image.fwhm
-        self.fnumber = source_image.fnumber
-        self.flength = source_image.flength
-        self.exposure = source_image.exposure
-        self.units = source_image.units
-        self.n_imgs = source_image.n_imgs
-        self.img_stk = source_image.img_stk
-        self.img_ave = source_image.img_ave
-        self.img_std = source_image.img_std
-        self.roix = source_image.roix
-        self.roiy = source_image.roiy
-        self.roiw = source_image.roiw
-        self.roih = source_image.roih
-        self.roi = roi
-        self.chkrrows = 4
-        self.chkrcols = 3
-        self.chkrsize = 5.0E-3
-        self.all_corners = None
-        self.object_points = self.define_calibration_points()
-        self.corner_points = self.find_corners()
-        self.mtx, self.dist, self.rvecs, self.tvecs = None, None, None, None
-
-    def define_calibration_points(self):
-        # Define calibration object points and corner locations
-        objpoints = np.zeros((self.chkrrows*self.chkrcols, 3), np.float32)
-        objpoints[:,:2] = np.mgrid[0:self.chkrrows, 0:self.chkrcols].T.reshape(-1, 2) # what is this??
-        objpoints *= self.chkrsize
-        return objpoints
-
-    def find_corners(self):
-        # Find the chessboard corners
-        gray = self.img_ave.astype(np.uint8)
-        if self.roi:
-            gray = gray[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
-        ret, corners = cv2.findChessboardCorners(gray, (self.chkrrows,self.chkrcols))
-        self.all_corners = ret
-
-        # refine corner locations
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-        corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
-        corners[:,:,0]+=self.roiy
-        corners[:,:,1]+=self.roix
-        return corners
-
-    def show_corners(self):
-        # Draw and display the corners
-        gray = self.img_ave.astype(np.uint8)
-        img = cv2.drawChessboardCorners(gray, (self.chkrrows,self.chkrcols), self.corner_points, self.all_corners)
-        if self.roi:
-            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
-        plt.imshow(img, origin='lower')
-        plt.show()
-
-    def calibrate_camera(self):
-        # Calibrate the camera
-        ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera([self.object_points], [self.corner_points], (self.width, self.height), None, None)
-        self.mtx = mtx
-        self.dist = dist
-        self.rvecs = rvecs
-        self.tvecs = tvecs
-        return mtx, dist, rvecs, tvecs
+        lght_err = self.img_std/lst_ave
+        cali_err = cali_source.img_std/cali_source.img_ave
+        self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (cali_err)**2)
 
 class CoAlignedImage(Image):
-    def __init__(self, source_image: LightImage, destination_image: LightImage, homography: np.ndarray=None, roi: bool=False) -> None:
+    def __init__(self,
+                    source_image: LightImage,
+                    destination_image: LightImage,
+                    homography: np.ndarray=None,
+                    roi: bool=False) -> None:
         self.dir = source_image.dir
         # TODO check subject directory exists
         self.subject = source_image.subject
@@ -396,12 +370,12 @@ class CoAlignedImage(Image):
 
     def find_homography(self, method: str):
 
-        query_img = self.img_ave.astype(np.uint8)
-        train_img = self.destination.img_ave.astype(np.uint8)
-
         if self.roi:
-            query_img = query_img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
-            train_img = train_img[self.destination.roix:self.destination.roix+self.destination.roiw, self.destination.roiy:self.destination.roiy+self.destination.roih]
+            query_img = self.roi_image().astype(np.int8)
+            train_img = self.destination.roi_image().astype(np.int8)
+        else:
+            query_img = self.img_ave.astype(np.uint8)
+            train_img = self.destination.img_ave.astype(np.uint8)
 
         # Initiate the ORB feature detector
         MAX_FEATURES = 500
@@ -442,18 +416,94 @@ class CoAlignedImage(Image):
     def align_images(self):
 
         # apply the transform
-        query_img = self.img_ave.astype(np.uint8)
         if self.roi:
-            query_img = query_img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+            query_img = self.roi_image().astype(np.int8)
+        else:
+            query_img = self.img_ave.astype(np.uint8)
         height, width = query_img.shape
         hmgr = self.homography
         query_reg = cv2.warpPerspective(query_img, hmgr, (width, height))
-        train_img = self.destination.img_ave.astype(np.uint8)
         if self.roi:
-            train_img = train_img[self.destination.roix:self.destination.roix+self.destination.roiw, self.destination.roiy:self.destination.roiy+self.destination.roih]
+            train_img = self.destination.roi_image().astype(np.int8)
+        else:
+            train_img = self.destination.img_ave.astype(np.uint8)
         fig = plt.figure()
         plt.imshow(query_reg-train_img, origin='lower')
         plt.show()
+
+class GeoCalImage(Image):
+    def __init__(self, source_image: LightImage, roi: bool=False) -> None:
+        self.dir = source_image.dir
+        # TODO check subject directory exists
+        self.subject = source_image.subject
+        self.channel = source_image.channel
+        self.img_type = 'geo'
+        self.camera = source_image.camera
+        self.serial = source_image.serial
+        self.width = source_image.width
+        self.height = source_image.height
+        self.cwl = source_image.cwl
+        self.fwhm = source_image.fwhm
+        self.fnumber = source_image.fnumber
+        self.flength = source_image.flength
+        self.exposure = source_image.exposure
+        self.units = source_image.units
+        self.n_imgs = source_image.n_imgs
+        self.img_stk = source_image.img_stk
+        self.img_ave = source_image.img_ave
+        self.img_std = source_image.img_std
+        self.roix = source_image.roix
+        self.roiy = source_image.roiy
+        self.roiw = source_image.roiw
+        self.roih = source_image.roih
+        self.roi = roi
+        self.crows = 4
+        self.ccols = 3
+        self.chkrsize = 5.0E-3
+        self.all_corners = None
+        self.object_points = self.define_calibration_points()
+        self.corner_points = self.find_corners()
+        self.mtx, self.dist, self.rvecs, self.tvecs = None, None, None, None
+
+    def define_calibration_points(self):
+        # Define calibration object points and corner locations
+        objpoints = np.zeros((self.crows*self.ccols, 3), np.float32)
+        objpoints[:,:2] = np.mgrid[0:self.crows, 0:self.ccols].T.reshape(-1, 2)
+        objpoints *= self.chkrsize
+        return objpoints
+
+    def find_corners(self):
+        # Find the chessboard corners
+        gray = self.img_ave.astype(np.uint8)
+        if self.roi:
+            gray = gray[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+        ret, corners = cv2.findChessboardCorners(gray, (self.crows,self.ccols))
+        self.all_corners = ret
+
+        # refine corner locations
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
+        corners[:,:,0]+=self.roiy
+        corners[:,:,1]+=self.roix
+        return corners
+
+    def show_corners(self):
+        # Draw and display the corners
+        gray = self.img_ave.astype(np.uint8)
+        img = cv2.drawChessboardCorners(gray, (self.crows,self.ccols), self.corner_points, self.all_corners)
+        if self.roi:
+            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+        plt.imshow(img, origin='lower')
+        plt.show()
+
+    def calibrate_camera(self):
+        # Calibrate the camera
+        ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera([self.object_points], [self.corner_points], (self.width, self.height), None, None)
+        self.mtx = mtx
+        self.dist = dist
+        self.rvecs = rvecs
+        self.tvecs = tvecs
+        return mtx, dist, rvecs, tvecs
 
 class AlignedImage(Image):
     def __init__(self, source_image: LightImage, source_geocal: GeoCalImage, destination_geocal: GeoCalImage) -> None:
