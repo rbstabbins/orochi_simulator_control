@@ -823,7 +823,11 @@ class Channel:
             'f-length': self.camera_props['flength'],
             'exposure': exposure,
             'image-type': img_type, # image or dark frame or averaged stack
-            'subject': subject
+            'subject': subject,
+            'roix': self.roi_props['x'],
+            'roiy': self.roi_props['y'],
+            'roiw': self.roi_props['w'],
+            'roih': self.roi_props['h']
         }
         cwl_str = str(int(self.camera_props['cwl']))
         channel = str(self.camera_props['number'])+'_'+cwl_str
