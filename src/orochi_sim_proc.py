@@ -139,7 +139,7 @@ class Image:
         """
         if self.img_type == 'rfl':
             vmin = 0.0
-            vmax = 0.1
+            vmax = 1.0
         else:
             vmin = None
             vmax = None
