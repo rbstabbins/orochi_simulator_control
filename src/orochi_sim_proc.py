@@ -8,7 +8,9 @@ from pathlib import Path
 import os
 import cv2
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import numpy as np
+from roipoly import RoiPoly, MultiRoi
 import tifffile as tiff
 from typing import Tuple
 import orochi_sim_ctrl as osc
@@ -16,7 +18,7 @@ import orochi_sim_ctrl as osc
 class Image:
     """Super class for handling image import and export.
     """
-    def __init__(self, subject: str, channel: str, img_type: str) -> None:
+    def __init__(self, subject: str, channel: str, img_type: str, roi: bool=False) -> None:
         """Initialise properties. Most of these are populated during image load.
         """
         self.dir = Path('..', 'data', subject, channel)
@@ -37,6 +39,8 @@ class Image:
         self.roiy = None
         self.roiw = None
         self.roih = None
+        self.roi = roi
+        self.polyroi = None
         self.units = ''
         self.n_imgs = None
         self.img_stk = None
@@ -90,11 +94,14 @@ class Image:
         # std. stack
         self.img_std = np.std(self.img_stk, axis=2)
 
-    def roi_image(self) -> np.ndarray:
+    def roi_image(self, polyroi: bool=False) -> np.ndarray:
         """Returns the region of interest of the image.
         """
-        return self.img_ave[self.roix:self.roix+self.roiw,
-                            self.roiy:self.roiy+self.roih]
+        roi_img = self.img_ave[self.roix:self.roix+self.roiw,self.roiy:self.roiy+self.roih]
+        if polyroi:
+            roi_img = roi_img * self.polyroi
+
+        return roi_img
 
     def roi_std(self) -> np.ndarray:
         """Returns the region of interest of the error image.
@@ -126,47 +133,74 @@ class Image:
         self.img_std = self.img_std / self.exposure # assume exposure err. negl.
         self.units = 'DN/s'
 
-    def image_stats(self) -> None:
-        """Print image statistics
+    def set_polyroi(self) -> None:
+        """Set an arbitrary polygon region of interest
         """
-        img_ave_mean = np.mean(self.img_ave)
-        print(f'Average Image Mean: {img_ave_mean} {self.units}')
-        img_std_mean = np.mean(self.img_std)
-        print(f'Noise Image Mean: {img_std_mean} {self.units}')
 
-    def image_display(self, roi: bool=False) -> None:
-        """Display the image mean and standard deviation in one frame.
-        """
-        # if self.img_type == 'rfl':
-        #     vmin = 0.0
-        #     vmax = 1.0
-        # else:
-        vmin = None
-        vmax = None
-        # set the size of the window for the two images
-        fig, ax = plt.subplots(
-            nrows=2, ncols=1, sharey=True, sharex=True,figsize=(5.5, 5.8))
-        fig.suptitle(f'subject: {self.subject}, Channel: {self.channel}')
-        # put the mean frame in
-        if roi:
+        if self.roi:
             img = self.roi_image()
         else:
             img = self.img_ave
-        ave = ax[0].imshow(img, origin='lower', vmin=vmin, vmax=vmax)
-        plt.colorbar(ave, ax=ax[0], label=self.units)
-        ax[0].set_title('Image Average')
-        # put the std frame in
+        default_backend = mpl.get_backend()
+        mpl.use('Qt5Agg')  # need this backend for RoiPoly to work
+        fig = plt.figure(figsize=(10,10), dpi=80)
+        plt.imshow(img, origin='lower')
+        plt.title('Draw ROI')
+
+        my_roi = RoiPoly(fig=fig) # draw new ROI in red color
+        plt.close()
+        # Get the masks for the ROIs
+        outline_mask = my_roi.get_mask(img)
+        roi_mask = outline_mask # np.flip(outline_mask, axis=0)
+
+        mpl.use(default_backend)  # reset backend
+        self.polyroi = roi_mask
+
+    def image_stats(self, polyroi: bool=False) -> None:
+        """Print image statistics
+        """
+        if polyroi:
+            img = self.roi_image()[self.polyroi]
+        img_ave_mean = np.nanmean(img)
+        print(f'Average Image Mean: {img_ave_mean} {self.units}')
+        img_ave_std = np.nanstd(img)
+        print(f'Average Image Std. Dev.: {img_ave_std} {self.units}')
+        img_std_mean = np.nanmean(self.img_std)
+        print(f'Noise Image Mean: {img_std_mean} {self.units}')
+        return img_ave_mean, img_ave_std, img_std_mean
+
+    def image_display(self, ax: object=None, noise: bool=False, roi: bool=False, polyroi: bool=False) -> None:
+        """Display the image mean and standard deviation in one frame.
+        """
+        # set the size of the window
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(5.5, 5.8))
+            fig.suptitle(f'Subject: {self.subject} ({self.img_type})')
+
+        # put the mean frame in
         if roi:
-            img_std = self.roi_std()
+            img = self.roi_image(polyroi)
         else:
-            img_std = self.img_std
-        std = ax[1].imshow(img_std, origin='lower')
-        ax[1].set_title('Image Std. Dev.')
-        plt.colorbar(std, ax=ax[1], label=self.units)
-        # show
-        plt.tight_layout()
-        plt.show()
+            img = self.img_ave
+
+        ave = ax.imshow(img, origin='lower')
+        im_ratio = img.shape[0] / img.shape[1]
+        cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=self.units)
+
+        if self.img_type == 'rfl':
+            cbar.formatter.set_powerlimits((1, 0))
+        else:
+            cbar.formatter.set_powerlimits((0, 0))
+        ax.set_title(f'{self.camera}: {int(self.cwl)} nm')
+
+        if ax is None:
+            plt.tight_layout()
+            plt.show()
+
+        return ax
+
         # TODO add histograms
+        # TODO add method for standard deviation image
 
     def save_tiff(self, save_stack: bool=False):
         """Save the average and error images to TIF files"""
@@ -261,6 +295,8 @@ class CalibrationImage(Image):
         self.roiy = source_image.roiy
         self.roiw = source_image.roiw
         self.roih = source_image.roih
+        self.roi = source_image.roi
+        self.polyroi = source_image.polyroi
         self.units = source_image.units
         self.n_imgs = source_image.n_imgs
         self.img_stk = source_image.img_stk
@@ -329,6 +365,8 @@ class ReflectanceImage(Image):
         self.roiy = source_image.roiy
         self.roiw = source_image.roiw
         self.roih = source_image.roih
+        self.roi = source_image.roi
+        self.polyroi = source_image.polyroi
         self.units = source_image.units
         self.n_imgs = source_image.n_imgs
         self.img_stk = source_image.img_stk
@@ -342,6 +380,12 @@ class ReflectanceImage(Image):
         lght_err = self.img_std/lst_ave
         cali_err = cali_source.img_std/cali_source.img_ave
         self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (cali_err)**2)
+
+    def normalise(self, base: Image):
+        """Normalise the reflectance image to a base image.
+        """
+        self.img_ave = self.img_ave / base.img_ave
+        self.units = 'Normalised Reflectance'
 
 class CoAlignedImage(Image):
     def __init__(self,
@@ -373,7 +417,8 @@ class CoAlignedImage(Image):
         self.roiw = source_image.roiw
         self.roih = source_image.roih
         self.roi = roi
-        self.mask = self.roi_mask(show=True)
+        self.polyroi = source_image.polyroi
+        self.mask = self.roi_mask(show=False)
         self.points = None
         self.descriptors = None
         self.destination = destination_image
@@ -472,27 +517,50 @@ class CoAlignedImage(Image):
             homography, _ = cv2.findHomography(p_src, p_dest, cv2.RANSAC)
         self.homography = homography
 
-    def align_images(self, roi: bool=False) -> None:
+    def align_images(self) -> None:
 
         # apply the transform
         query_img = self.img_ave
         height, width = query_img.shape
         hmgr = self.homography
         query_reg = cv2.warpPerspective(query_img, hmgr, (width, height))
+        self.img_ave = query_reg
+        self.roix = self.destination.roix
+        self.roiy = self.destination.roiy
+        self.roiw = self.destination.roiw
+        self.roih = self.destination.roih
+        # TODO apply to noise image
+
+    def show_alignment(self, overlay: bool=True, error: bool=False, ax: object=None, roi: bool=False) -> None:
 
         if roi:
-            query_reg = query_reg[self.destination.roix:self.destination.roix+self.destination.roiw, self.destination.roiy:self.destination.roiy+self.destination.roih]
+            query_reg = self.roi_image()
             train_img = self.destination.roi_image()
         else:
+            query_reg = self.img_ave
             train_img = self.destination.img_ave
-        fig, ax = plt.subplots(ncols=1, nrows=2)
-        col_max = max(np.max(query_reg.astype(float)), np.max(train_img.astype(float)))
-        src = ax[0].imshow(query_reg-train_img, cmap='RdBu', origin='lower', vmin=-col_max, vmax=col_max)
-        plt.colorbar(src, ax=ax[0], label='Source* - Destination')
-        err = ax[1].imshow(np.abs(query_reg-train_img)/train_img, origin='lower')
-        # plt.colorbar(dest, ax=ax[0], label='Destination Signal')
-        plt.colorbar(err, ax=ax[1], label='Err. % (|S. - D.|/D.)')
-        plt.show()
+
+        if ax is None:
+            fig, ax = plt.subplots(ncols=1, nrows=2)
+
+        if overlay:
+            col_max = max(np.max(query_reg.astype(float)), np.max(train_img.astype(float)))
+            src = ax.imshow(query_reg-train_img, cmap='RdBu', origin='lower', vmin=-col_max, vmax=col_max)
+            im_ratio = query_reg.shape[0] / query_reg.shape[1]
+            cbar = plt.colorbar(src, ax=ax, fraction=0.047*im_ratio, label='Source - Destination')
+        elif error:
+            err = ax.imshow(np.abs(query_reg-train_img)/train_img, origin='lower')
+            im_ratio = query_reg.shape[0] / query_reg.shape[1]
+            cbar = plt.colorbar(err, ax=ax, fraction=0.047*im_ratio, label='Err. % (|S. - D.|/D.)')
+
+        if self.img_type == 'rfl':
+            cbar.formatter.set_powerlimits((1, 1))
+        else:
+            cbar.formatter.set_powerlimits((0, 0))
+
+        ax.set_title(f'{self.camera}: {self.cwl} nm')
+        if ax is None:
+            plt.show()
 
     # def find_homography(self, method: str):
 
