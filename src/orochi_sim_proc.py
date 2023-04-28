@@ -10,9 +10,10 @@ import cv2
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import numpy as np
+import pandas as pd
 from roipoly import RoiPoly, MultiRoi
 import tifffile as tiff
-from typing import Tuple
+from typing import Tuple, Dict
 import orochi_sim_ctrl as osc
 
 class Image:
@@ -99,8 +100,7 @@ class Image:
         """
         roi_img = self.img_ave[self.roix:self.roix+self.roiw,self.roiy:self.roiy+self.roih]
         if polyroi:
-            roi_img = roi_img * self.polyroi
-
+            roi_img = np.where(self.polyroi, roi_img, np.nan)
         return roi_img
 
     def roi_std(self) -> np.ndarray:
@@ -161,15 +161,12 @@ class Image:
         """
         if polyroi:
             img = self.roi_image()[self.polyroi]
-        img_ave_mean = np.nanmean(img)
-        print(f'Average Image Mean: {img_ave_mean} {self.units}')
-        img_ave_std = np.nanstd(img)
-        print(f'Average Image Std. Dev.: {img_ave_std} {self.units}')
-        img_std_mean = np.nanmean(self.img_std)
-        print(f'Noise Image Mean: {img_std_mean} {self.units}')
+        img_ave_mean = np.nanmean(img, where=np.isfinite(img))
+        img_ave_std = np.nanstd(img, where=np.isfinite(img))
+        img_std_mean = np.nanmean(self.img_std, where=np.isfinite(self.img_std))
         return img_ave_mean, img_ave_std, img_std_mean
 
-    def image_display(self, ax: object=None, noise: bool=False, roi: bool=False, polyroi: bool=False) -> None:
+    def image_display(self, ax: object=None, noise: bool=False, roi: bool=False, polyroi: bool=False, vmin: float=None, vmax: float=None) -> None:
         """Display the image mean and standard deviation in one frame.
         """
         # set the size of the window
@@ -183,12 +180,14 @@ class Image:
         else:
             img = self.img_ave
 
-        ave = ax.imshow(img, origin='lower')
+        ave = ax.imshow(img, origin='lower', vmin=vmin, vmax=vmax)
         im_ratio = img.shape[0] / img.shape[1]
         cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=self.units)
 
-        if self.img_type == 'rfl':
-            cbar.formatter.set_powerlimits((1, 0))
+        if self.units == 'Reflectance':
+            cbar.formatter.set_scientific(False)
+        elif self.units == 'Above-Bias Signal DN':
+            cbar.formatter.set_scientific(False)
         else:
             cbar.formatter.set_powerlimits((0, 0))
         ax.set_title(f'{self.camera}: {int(self.cwl)} nm')
@@ -742,3 +741,335 @@ class CoAlignedImage(Image):
 #         gray = self.img_ave.astype(np.uint8)
 #         img_ave = cv2.remap(gray, map1, map2, cv2.INTER_LINEAR)
 #         return img_ave
+
+def grid_plot(title: str=None):
+    cam_ax = {}
+    fig, ax = plt.subplots(3,3, sharex='all', sharey='all', figsize=(10,10))
+    # TODO update this according to camera number
+    cam_ax[6] = ax[0][0]
+    cam_ax[1] = ax[0][1]
+    cam_ax[3] = ax[0][2]
+    cam_ax[4] = ax[1][0]
+    cam_ax[0] = ax[1][2]
+    cam_ax[7] = ax[2][1]
+    cam_ax[5] = ax[2][2]
+    cam_ax[2] = ax[2][0] # empty
+    cam_ax[8] = ax[1][1] # empty
+    fig.suptitle(title)
+    return fig, cam_ax
+
+def show_grid(fig, ax):
+    # fig.delaxes(ax[2]) # empty
+    # fig.delaxes(ax[8]) # empty
+    ax[2].set_axis_off()
+    ax[8].set_axis_off()
+    fig.tight_layout()
+    fig.show()
+
+def load_reflectance_calibration(subject: str='reflectance_calibration') -> Dict:
+    channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
+    cali_imgs = {} # store the calibration objects in a dictionary
+    title = 'Reflectance Calibration Target'
+    fig, ax = grid_plot(title)
+    for channel_path in channels:
+        channel = channel_path.name
+        # load the calibration target images
+        cali = LightImage(subject, channel)
+        cali.image_load()
+        print(f'Loading Calibration Target for: {cali.camera} ({int(cali.cwl)} nm)')
+        # load the calibration target dark frames
+        dark_cali = DarkImage(subject, channel)
+        dark_cali.image_load()
+        # subtract the dark frame
+        cali.dark_subtract(dark_cali)
+        # show
+        cali.image_display(roi=False, ax=ax[cali.camera])
+        cali_imgs[channel] = cali
+    show_grid(fig, ax)
+    return cali_imgs
+
+def calibrate_reflectance(cali_imgs: Dict) -> Dict:
+    """Calibrated the reflactance correction coefficients for images
+    of the Spectralon reflectance target.
+
+    :param subject: directory of target images, defaults to 'reflectance_calibration'
+    :type subject: str, optional
+    :return: Dictionary of reflectance correction coefficient CalibrationImages
+    :rtype: Dict
+    """
+    channels = list(cali_imgs.keys())
+    title = 'Reflectance Calibration Coefficients'
+    cali_coeffs = {}
+    fig, ax = grid_plot(title)
+    for channel in channels:
+        # load the calibration target images
+        cali = cali_imgs[channel]
+        print(f'Finding Reflectance Correction for: {cali.camera} ({int(cali.cwl)} nm)')
+        # apply exposure correction
+        cali.correct_exposure()
+        # compute calibration coefficient image
+        cali_coeff = CalibrationImage(cali)
+        cali_coeff.mask_target()
+        cali_coeff.compute_reflectance_coefficients()
+        cali_coeff.image_display(roi=True, ax=ax[cali_coeff.camera])
+        cali_coeffs[channel] = cali_coeff
+    show_grid(fig, ax)
+    return cali_coeffs
+
+def load_sample(subject: str='sample') -> Dict:
+    """Load images of the sample.
+
+    :param subject: Directory of sample images, defaults to 'sample'
+    :type subject: str, optional
+    :return: Dictionary of sample LightImages (units of DN)
+    :rtype: Dict
+    """
+    channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
+    smpl_imgs = {} # store the calibration objects in a dictionary
+    title = f'{subject} Images'
+    fig, ax = grid_plot(title)
+    for channel_path in channels:
+        channel = channel_path.name
+        smpl = LightImage(subject, channel)
+        smpl.image_load()
+        print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
+        dark_smpl = DarkImage(subject, channel)
+        dark_smpl.image_load()
+        # subtract the dark frame
+        smpl.dark_subtract(dark_smpl)
+        # show
+        smpl.image_display(roi=False, ax=ax[smpl.camera])
+        smpl_imgs[channel] = smpl
+    show_grid(fig, ax)
+    return smpl_imgs
+
+def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict) -> Dict:
+    """Apply reflectance calibration coefficients to the sample images.
+
+    :param sample_imgs: Dictionary of LightImage objects (units of DN)
+    :type sample_imgs: Dict
+    :return: Dictionary of Reflectance Images (units of Reflectance)
+    :rtype: Dict
+    """
+    channels = list(smpl_imgs.keys())
+    reflectance = {}
+    title = 'Sample Reflectance'
+    fig, ax = grid_plot(title)
+    vmax=0.0
+    for channel in channels:
+        smpl = smpl_imgs[channel]
+        # apply exposure correction
+        smpl.correct_exposure()
+        # apply calibration coefficients
+        cali_coeff = cali_coeffs[channel]
+        refl = ReflectanceImage(smpl)
+        refl.calibrate_reflectance(cali_coeff)
+        refl_max = np.max(refl.img_ave[np.isfinite(refl.img_ave)])
+        if refl_max > vmax:
+            vmax = refl_max
+        # save the reflectance image
+        refl.save_tiff()
+        reflectance[channel] = refl
+    for channel in channels:
+        refl = reflectance[channel]
+        refl.image_display(roi=True, ax=ax[refl.camera], vmin=0.0, vmax=vmax)
+    show_grid(fig, ax)
+    return reflectance
+
+def normalise_reflectance(refl_imgs: Dict, base_channel: str='6_550') -> Dict:
+    """Normalise the reflectance images to the given channel.
+
+    :param refl_imgs: Dictionary of ReflectanceImage objects
+    :type refl_imgs: Dict
+    :return: Dictionary of ReflectanceImage objects
+    :rtype: Dict
+    """
+    # optionally normalise reflectance images to 550 nm channel
+    channels = list(refl_imgs.keys())
+    base = refl_imgs['6_550']
+    fig, ax = grid_plot('Normalised Reflectance')
+    vmax = 1.0
+    vmin = 1.0
+    norm_imgs = {}
+    for channel in channels:
+        refl = refl_imgs[channel]
+        norm = ReflectanceImage(refl)
+        norm.img_ave = refl.img_ave.copy()
+        norm.normalise(base)
+        if norm.polyroi is not None:
+            roi_img = norm.roi_image(polyroi=True)
+        else:
+            roi_img = norm.roi_image()
+        smpl_max = np.max(roi_img[np.isfinite(roi_img)])
+        smpl_min = np.min(roi_img[np.isfinite(roi_img)])
+        if smpl_max > vmax:
+            vmax = smpl_max
+        if smpl_min < vmin:
+            vmin = smpl_min
+        norm_imgs[channel] = norm
+    for channel in channels:
+        norm = norm_imgs[channel]
+        norm.image_display(roi=True, polyroi=True, ax=ax[norm.camera], vmin=vmin, vmax=vmax)
+    show_grid(fig, ax)
+    return norm_imgs
+
+def set_roi(aligned_imgs: Dict, base_channel: str='6_550') -> Dict:
+    # set region of interest on the base channel
+    channels = list(aligned_imgs.keys())
+    base = aligned_imgs['6_550']
+    base.roi =True
+    base.set_polyroi()
+    # apply the polyroi to each channel:
+    fig, ax = grid_plot('Sample Region of Interest Selection')
+    vmax = 0.0
+    vmin=1.0
+    for channel in channels:
+        smpl = aligned_imgs[channel]
+        smpl.polyroi = base.polyroi
+        roi_img = smpl.roi_image(polyroi=True)
+        smpl_max = np.max(roi_img[np.isfinite(roi_img)])
+        smpl_min = np.min(roi_img[np.isfinite(roi_img)])
+        if smpl_max > vmax:
+            vmax = smpl_max
+        if smpl_min < vmin:
+            vmin = smpl_min
+    for channel in channels:
+        smpl = aligned_imgs[channel]
+        smpl.image_display(roi=True,polyroi=True, ax=ax[smpl.camera], vmin=vmin, vmax=vmax)
+    show_grid(fig, ax)
+    return aligned_imgs
+
+def plot_roi_reflectance(refl_imgs: Dict) -> pd.DataFrame:
+    """Plot the reflectance over the Region of Interest
+
+    :param refl_imgs: Dictionary of ReflectanceImage objects
+    :type refl_imgs: Dict
+    :return: Pandas DataFrame of reflectance over the ROI
+    :rtype: pd.DataFrame
+    """
+    cwls = []
+    means = []
+    stds = []
+    channels = list(refl_imgs.keys())
+    for channel in channels:
+        refl_img = refl_imgs[channel]
+        mean, std, _ = refl_img.image_stats(polyroi=True)
+        cwl = refl_img.cwl
+        cwls.append(cwl)
+        means.append(mean)
+        stds.append(std)
+    results = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'err':stds})
+    results.sort_values(by='cwl', inplace=True)
+    # results.plot(x='cwl', y='mean', yerr='std')
+
+    fig = plt.figure()
+    plt.grid(visible=True)
+    plt.errorbar(
+            x=results.cwl,
+            y=results.reflectance,
+            yerr=results.err,
+            fmt='o-',
+            ecolor='k',
+            capsize=2.0)
+    plt.xlabel('Wavelength (nm)')
+    plt.ylabel('Reflectance')
+    plt.title('Sample Reflectance Mean ± 1σ over ROI')
+
+
+def load_geometric_calibration(subject: str='geometric_calibration') -> Dict:
+    """Load the geometric calibration images.
+
+    :param subject: directory of target images, defaults to 'geometric_calibration'
+    :type subject: str, optional
+    :return: Dictionary of geometric correction LightImages
+    :rtype: Dict
+    """
+    target = 'geometric_calibration'
+    channels = sorted(list(Path('..', 'data',target).glob('[!_]*')))
+    geocs = {}
+    fig, ax = grid_plot('Geometric Calibration Target')
+    for channel_path in channels:
+        channel = channel_path.name
+        # load the geometric calibration images
+        geoc = LightImage(subject, channel)
+        geoc.image_load()
+        print(f'Loading Geometric Target for: {geoc.camera} ({geoc.cwl} nm)')
+        # load the geometric calibration dark frames
+        dark_geoc = DarkImage(target, channel)
+        dark_geoc.image_load()
+        # subtract the dark frame
+        geoc.dark_subtract(dark_geoc)
+        # show
+        geoc.image_display(roi=False, ax=ax[geoc.camera])
+        geocs[channel] = geoc
+    show_grid(fig, ax)
+    return geocs
+
+def calibrate_homography(geocs: Dict) -> Dict:
+    """Calibrate the homography matrix for images of the geometric calibration
+    target.
+
+    :param subject: directory of target images, defaults to 'geometric_calibration'
+    :type subject: str, optional
+    :return: Dictionary of geometric correction LightImages
+    :rtype: Dict
+    """
+    channels = list(geocs.keys())
+    destination = channels[0]
+    cali_dest = geocs[destination]
+    coals = {}
+    fig, ax = grid_plot('Target Alignment: Overlay')
+    fig1, ax1 = grid_plot('Target Alignment: Error')
+    for channel in channels:
+        cali_src = geocs[channel]
+        src = CoAlignedImage(cali_src, roi=False)
+        print(f'Calibrating Homography for: {src.camera} ({src.cwl} nm)')
+        n_ps = src.find_points('ORB')
+        print(f'...{n_ps} source points found')
+        dest = CoAlignedImage(cali_dest, roi=False)
+        n_pd = dest.find_points('ORB')
+        print(f'...{n_pd} destination points found')
+        src.destination = dest
+        n_m = src.find_matches('HAMMING')
+        print(f'...{n_m} matches found')
+        # src.show_matches()
+        src.find_homography('RANSAC')
+        src.align_images()
+        src.show_alignment(overlay=True, error=False, ax=ax[src.camera], roi=True)
+        src.show_alignment(overlay=False, error=True, ax=ax1[src.camera], roi=True)
+        coals[channel] = src
+    show_grid(fig, ax)
+    show_grid(fig1, ax1)
+    return coals
+
+def apply_coalignment(smpl_imgs: Dict, coals: Dict) -> Dict:
+    """Apply homography coalignment to the sample images.
+
+    :param smpl_imgs: Dictionary of sample images (units of Reflectance)
+    :type smpl_imgs: Dict
+    :param coals: Dictionary of geometric correction LightImages
+    :type coals: Dict
+    :return: Dictionary of co-aligned sample images (units of Reflectance)
+    :rtype: Dict
+    """
+    channels = list(smpl_imgs.keys())
+    destination = channels[0]
+    sample_dest = smpl_imgs[destination]
+    fig, ax = grid_plot('Sample Alignment: Overlay')
+    fig1, ax1 = grid_plot('Sample Alignment: Error')
+    aligned_refl = {}
+    for channel in channels:
+        sample_src = smpl_imgs[channel]
+        sample_coal = coals[channel]
+        src = CoAlignedImage(
+                    sample_src,
+                    destination_image=sample_dest,
+                    homography=sample_coal.homography,
+                    roi=False)
+        src.align_images()
+        src.show_alignment(overlay=True, error=False, ax=ax[src.camera], roi=True)
+        src.show_alignment(overlay=False, error=True, ax=ax1[src.camera], roi=True)
+        aligned_refl[channel] = ReflectanceImage(src) # TODO make this a generic image type
+    show_grid(fig, ax)
+    show_grid(fig1, ax1)
+    return aligned_refl
