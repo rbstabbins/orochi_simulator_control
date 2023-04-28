@@ -680,8 +680,8 @@ def prepare_dark_acquisition(ic):
     msg = 'Check Lens Caps are in place'
     ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
-def find_channel_exposures(cameras: List, init_t_exp=1.0/500, target=150, n_hot=10,
-                      tol=1, limit=5, roi=True) -> Dict:
+def find_channel_exposures(cameras: List, init_t_exp=1.0, target=150, n_hot=5,
+                      tol=1, limit=10, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
 
     :param cameras: list of camera objects
