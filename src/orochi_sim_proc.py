@@ -887,6 +887,7 @@ def normalise_reflectance(refl_imgs: Dict, base_channel: str='6_550') -> Dict:
     # optionally normalise reflectance images to 550 nm channel
     channels = list(refl_imgs.keys())
     base = refl_imgs['6_550']
+    base.img_ave = refl_imgs['6_550'].img_ave.copy()
     fig, ax = grid_plot('Normalised Reflectance')
     vmax = 1.0
     vmin = 1.0
@@ -917,6 +918,7 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550') -> Dict:
     # set region of interest on the base channel
     channels = list(aligned_imgs.keys())
     base = aligned_imgs['6_550']
+    base.img_ave = aligned_imgs['6_550'].img_ave.copy()
     base.roi =True
     base.set_polyroi()
     # apply the polyroi to each channel:
