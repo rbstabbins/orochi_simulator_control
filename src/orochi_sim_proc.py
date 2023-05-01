@@ -16,6 +16,8 @@ import tifffile as tiff
 from typing import Tuple, Dict
 import orochi_sim_ctrl as osc
 
+FIG_W = 10 # figure width in inches
+
 class Image:
     """Super class for handling image import and export.
     """
@@ -166,12 +168,14 @@ class Image:
         img_std_mean = np.nanmean(self.img_std, where=np.isfinite(self.img_std))
         return img_ave_mean, img_ave_std, img_std_mean
 
-    def image_display(self, ax: object=None, noise: bool=False, roi: bool=False, polyroi: bool=False, vmin: float=None, vmax: float=None) -> None:
+    def image_display(self, ax: object=None, histo_ax: object=None, noise: bool=False, roi: bool=False, polyroi: bool=False, vmin: float=None, vmax: float=None) -> None:
         """Display the image mean and standard deviation in one frame.
         """
         # set the size of the window
         if ax is None:
-            fig, ax = plt.subplots(figsize=(5.5, 5.8))
+            fig, axs = plt.subplots(1,1,figsize=(FIG_W/2, FIG_W))
+            ax = axs[0]
+            histo_ax = axs[1]
             fig.suptitle(f'Subject: {self.subject} ({self.img_type})')
 
         # put the mean frame in
@@ -190,7 +194,13 @@ class Image:
             cbar.formatter.set_scientific(False)
         else:
             cbar.formatter.set_powerlimits((0, 0))
-        ax.set_title(f'{self.camera}: {int(self.cwl)} nm')
+        ax.set_title(f'Device {self.camera} ({int(self.cwl)} nm)')
+
+        # add histogram
+        counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)
+        histo_ax.hist(bins[:-1], bins, weights=counts, label=f'{self.camera}: {int(self.cwl)} nm', log=True, fill=False, stacked=True, histtype='step')
+        # histo_ax.stairs(counts, bins, label=f'{self.camera}: {int(self.cwl)} nm', log=True)
+        histo_ax.set_xlabel(self.units)
 
         if ax is None:
             plt.tight_layout()
@@ -530,7 +540,7 @@ class CoAlignedImage(Image):
         self.roih = self.destination.roih
         # TODO apply to noise image
 
-    def show_alignment(self, overlay: bool=True, error: bool=False, ax: object=None, roi: bool=False) -> None:
+    def show_alignment(self, overlay: bool=True, error: bool=False, ax: object=None, histo_ax: object=None, roi: bool=False) -> None:
 
         if roi:
             query_reg = self.roi_image()
@@ -543,14 +553,23 @@ class CoAlignedImage(Image):
             fig, ax = plt.subplots(ncols=1, nrows=2)
 
         if overlay:
+            img = query_reg-train_img
             col_max = max(np.max(query_reg.astype(float)), np.max(train_img.astype(float)))
-            src = ax.imshow(query_reg-train_img, cmap='RdBu', origin='lower', vmin=-col_max, vmax=col_max)
+            src = ax.imshow(img, cmap='RdBu', origin='lower', vmin=-col_max, vmax=col_max)
             im_ratio = query_reg.shape[0] / query_reg.shape[1]
-            cbar = plt.colorbar(src, ax=ax, fraction=0.047*im_ratio, label='Source - Destination')
+            label = 'Source - Destination'
+            cbar = plt.colorbar(src, ax=ax, fraction=0.047*im_ratio, label=label)
         elif error:
-            err = ax.imshow(np.abs(query_reg-train_img)/train_img, origin='lower')
+            img = np.abs(query_reg-train_img)/train_img
+            err = ax.imshow(img, origin='lower')
             im_ratio = query_reg.shape[0] / query_reg.shape[1]
-            cbar = plt.colorbar(err, ax=ax, fraction=0.047*im_ratio, label='Err. % (|S. - D.|/D.)')
+            label = 'Err. % (|S. - D.|/D.)'
+            cbar = plt.colorbar(err, ax=ax, fraction=0.047*im_ratio, label=label)
+
+            # add histogram
+        counts, bins = np.histogram(img[np.isfinite(img)], bins=128)
+        histo_ax.hist(bins[:-1], bins, weights=counts, label=f'{self.camera}: {int(self.cwl)} nm', log=True, fill=False, stacked=True, histtype='step')
+        histo_ax.set_xlabel(label)
 
         if self.img_type == 'rfl':
             cbar.formatter.set_powerlimits((1, 1))
@@ -744,7 +763,7 @@ class CoAlignedImage(Image):
 
 def grid_plot(title: str=None):
     cam_ax = {}
-    fig, ax = plt.subplots(3,3, sharex='all', sharey='all', figsize=(10,10))
+    fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W))
     # TODO update this according to camera number
     cam_ax[6] = ax[0][0]
     cam_ax[1] = ax[0][1]
@@ -754,22 +773,26 @@ def grid_plot(title: str=None):
     cam_ax[7] = ax[2][1]
     cam_ax[5] = ax[2][2]
     cam_ax[2] = ax[2][0] # empty
-    cam_ax[8] = ax[1][1] # empty
+    cam_ax[8] = ax[1][1] # Histogram
+    cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
     fig.suptitle(title)
     return fig, cam_ax
 
 def show_grid(fig, ax):
-    # fig.delaxes(ax[2]) # empty
-    # fig.delaxes(ax[8]) # empty
-    ax[2].set_axis_off()
-    ax[8].set_axis_off()
+    # get individual axis dimensions/ratio
+    ax[8].legend()
     fig.tight_layout()
+    ax_h, ax_w = ax[0].bbox.height / fig.dpi, ax[0].bbox.width / fig.dpi
+    # update figure size to match
+    fig.set_size_inches(FIG_W*ax_h/ax_w, FIG_W)
+    ax[2].set_axis_off()
+    # ax[8].set_axis_off()
     fig.show()
 
 def load_reflectance_calibration(subject: str='reflectance_calibration') -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
     cali_imgs = {} # store the calibration objects in a dictionary
-    title = 'Reflectance Calibration Target'
+    title = 'Spectralon 99% Calibration Target'
     fig, ax = grid_plot(title)
     for channel_path in channels:
         channel = channel_path.name
@@ -783,7 +806,7 @@ def load_reflectance_calibration(subject: str='reflectance_calibration') -> Dict
         # subtract the dark frame
         cali.dark_subtract(dark_cali)
         # show
-        cali.image_display(roi=False, ax=ax[cali.camera])
+        cali.image_display(roi=False, ax=ax[cali.camera], histo_ax=ax[8])
         cali_imgs[channel] = cali
     show_grid(fig, ax)
     return cali_imgs
@@ -811,7 +834,7 @@ def calibrate_reflectance(cali_imgs: Dict) -> Dict:
         cali_coeff = CalibrationImage(cali)
         cali_coeff.mask_target()
         cali_coeff.compute_reflectance_coefficients()
-        cali_coeff.image_display(roi=True, ax=ax[cali_coeff.camera])
+        cali_coeff.image_display(roi=True, ax=ax[cali_coeff.camera], histo_ax=ax[8])
         cali_coeffs[channel] = cali_coeff
     show_grid(fig, ax)
     return cali_coeffs
@@ -838,7 +861,7 @@ def load_sample(subject: str='sample') -> Dict:
         # subtract the dark frame
         smpl.dark_subtract(dark_smpl)
         # show
-        smpl.image_display(roi=False, ax=ax[smpl.camera])
+        smpl.image_display(roi=False, ax=ax[smpl.camera], histo_ax=ax[8])
         smpl_imgs[channel] = smpl
     show_grid(fig, ax)
     return smpl_imgs
@@ -872,7 +895,7 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict) -> Dict:
         reflectance[channel] = refl
     for channel in channels:
         refl = reflectance[channel]
-        refl.image_display(roi=True, ax=ax[refl.camera], vmin=0.0, vmax=vmax)
+        refl.image_display(roi=True, ax=ax[refl.camera], histo_ax=ax[8], vmin=0.0, vmax=vmax)
     show_grid(fig, ax)
     return reflectance
 
@@ -910,7 +933,7 @@ def normalise_reflectance(refl_imgs: Dict, base_channel: str='6_550') -> Dict:
         norm_imgs[channel] = norm
     for channel in channels:
         norm = norm_imgs[channel]
-        norm.image_display(roi=True, polyroi=True, ax=ax[norm.camera], vmin=vmin, vmax=vmax)
+        norm.image_display(roi=True, polyroi=True, ax=ax[norm.camera], histo_ax=ax[8], vmin=vmin, vmax=vmax)
     show_grid(fig, ax)
     return norm_imgs
 
@@ -937,7 +960,7 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550') -> Dict:
             vmin = smpl_min
     for channel in channels:
         smpl = aligned_imgs[channel]
-        smpl.image_display(roi=True,polyroi=True, ax=ax[smpl.camera], vmin=vmin, vmax=vmax)
+        smpl.image_display(roi=True,polyroi=True, ax=ax[smpl.camera], vmin=vmin, vmax=vmax, histo_ax=ax[8])
     show_grid(fig, ax)
     return aligned_imgs
 
@@ -987,7 +1010,7 @@ def load_geometric_calibration(subject: str='geometric_calibration') -> Dict:
     :rtype: Dict
     """
     target = 'geometric_calibration'
-    channels = sorted(list(Path('..', 'data',target).glob('[!_]*')))
+    channels = sorted(list(Path('..', 'data',target).glob('[!._]*')))
     geocs = {}
     fig, ax = grid_plot('Geometric Calibration Target')
     for channel_path in channels:
@@ -1002,7 +1025,7 @@ def load_geometric_calibration(subject: str='geometric_calibration') -> Dict:
         # subtract the dark frame
         geoc.dark_subtract(dark_geoc)
         # show
-        geoc.image_display(roi=False, ax=ax[geoc.camera])
+        geoc.image_display(roi=False, ax=ax[geoc.camera], histo_ax=ax[8])
         geocs[channel] = geoc
     show_grid(fig, ax)
     return geocs
@@ -1037,8 +1060,8 @@ def calibrate_homography(geocs: Dict) -> Dict:
         # src.show_matches()
         src.find_homography('RANSAC')
         src.align_images()
-        src.show_alignment(overlay=True, error=False, ax=ax[src.camera], roi=True)
-        src.show_alignment(overlay=False, error=True, ax=ax1[src.camera], roi=True)
+        src.show_alignment(overlay=True, error=False, ax=ax[src.camera], histo_ax=ax[8], roi=True)
+        src.show_alignment(overlay=False, error=True, ax=ax1[src.camera], histo_ax=ax1[8], roi=True)
         coals[channel] = src
     show_grid(fig, ax)
     show_grid(fig1, ax1)
@@ -1069,8 +1092,8 @@ def apply_coalignment(smpl_imgs: Dict, coals: Dict) -> Dict:
                     homography=sample_coal.homography,
                     roi=False)
         src.align_images()
-        src.show_alignment(overlay=True, error=False, ax=ax[src.camera], roi=True)
-        src.show_alignment(overlay=False, error=True, ax=ax1[src.camera], roi=True)
+        src.show_alignment(overlay=True, error=False, ax=ax[src.camera], histo_ax=ax[8], roi=True)
+        src.show_alignment(overlay=False, error=True, ax=ax1[src.camera], histo_ax=ax1[8], roi=True)
         aligned_refl[channel] = ReflectanceImage(src) # TODO make this a generic image type
     show_grid(fig, ax)
     show_grid(fig1, ax1)
