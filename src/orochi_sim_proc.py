@@ -101,15 +101,20 @@ class Image:
         """Returns the region of interest of the image.
         """
         roi_img = self.img_ave[self.roix:self.roix+self.roiw,self.roiy:self.roiy+self.roih]
+
         if polyroi:
             roi_img = np.where(self.polyroi, roi_img, np.nan)
         return roi_img
 
-    def roi_std(self) -> np.ndarray:
+    def roi_std(self, polyroi: bool=False) -> np.ndarray:
         """Returns the region of interest of the error image.
         """
-        return self.img_std[self.roix:self.roix+self.roiw,
+        roi_img = self.img_std[self.roix:self.roix+self.roiw,
                             self.roiy:self.roiy+self.roih]
+
+        if polyroi:
+            roi_img = np.where(self.polyroi, roi_img, np.nan)
+        return roi_img
 
     def check_property(self, obj_prop, metadata):
         """Check that the metadata for a given image property is consistent"""
@@ -179,18 +184,26 @@ class Image:
             fig.suptitle(f'Subject: {self.subject} ({self.img_type})')
 
         # put the mean frame in
-        if roi:
-            img = self.roi_image(polyroi)
+        if noise:
+            if roi:
+                img = self.roi_std(polyroi)
+            else:
+                img = self.img_std
+            label = self.units+ ' Noise'
         else:
-            img = self.img_ave
+            if roi:
+                img = self.roi_image(polyroi)
+            else:
+                img = self.img_ave
+            label = self.units
 
         ave = ax.imshow(img, origin='lower', vmin=vmin, vmax=vmax)
         im_ratio = img.shape[0] / img.shape[1]
-        cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=self.units)
+        cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=label)
 
-        if self.units == 'Reflectance':
+        if (label == 'Reflectance'):
             cbar.formatter.set_scientific(False)
-        elif self.units == 'Above-Bias Signal DN':
+        elif (label == 'Above-Bias Signal DN'):
             cbar.formatter.set_scientific(False)
         else:
             cbar.formatter.set_powerlimits((0, 0))
@@ -198,9 +211,9 @@ class Image:
 
         # add histogram
         counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)
-        histo_ax.hist(bins[:-1], bins, weights=counts, label=f'{self.camera}: {int(self.cwl)} nm', log=True, fill=False, stacked=True, histtype='step')
+        histo_ax.hist(bins[:-1], bins, weights=counts, label=f'{int(self.cwl)} nm ({self.camera})', log=True, fill=False, stacked=True, histtype='step')
         # histo_ax.stairs(counts, bins, label=f'{self.camera}: {int(self.cwl)} nm', log=True)
-        histo_ax.set_xlabel(self.units)
+        histo_ax.set_xlabel(label)
 
         if ax is None:
             plt.tight_layout()
@@ -331,10 +344,11 @@ class CalibrationImage(Image):
         self.reference_reflectance = np.mean(data['reflectance'][band])
         self.reference_reflectance_err = np.std(data['reflectance'][band])
 
-    def mask_target(self):
+    def mask_target(self, clip: float=0.10):
         """Mask the calibration target in the image."""
         # cut dark pixels
-        mask = self.img_ave > 0.10*np.quantile(self.roi_image(), 0.90)
+        dark_limit = np.quantile(self.roi_image(), clip)
+        mask = self.img_ave > dark_limit
         self.img_ave = self.img_ave * mask
         # # cut bright pixels that exceed a percentile
         # mask = self.img_ave < np.quantile(self.roi_image(), 0.90)
@@ -775,7 +789,7 @@ def grid_plot(title: str=None):
     cam_ax[2] = ax[2][0] # empty
     cam_ax[8] = ax[1][1] # Histogram
     cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
-    fig.suptitle(title)
+    # fig.suptitle(title)
     return fig, cam_ax
 
 def show_grid(fig, ax):
@@ -787,9 +801,10 @@ def show_grid(fig, ax):
     fig.set_size_inches(FIG_W*ax_h/ax_w, FIG_W)
     ax[2].set_axis_off()
     # ax[8].set_axis_off()
+    # fig.tight_layout()
     fig.show()
 
-def load_reflectance_calibration(subject: str='reflectance_calibration') -> Dict:
+def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False) -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
     cali_imgs = {} # store the calibration objects in a dictionary
     title = 'Spectralon 99% Calibration Target'
@@ -806,24 +821,28 @@ def load_reflectance_calibration(subject: str='reflectance_calibration') -> Dict
         # subtract the dark frame
         cali.dark_subtract(dark_cali)
         # show
-        cali.image_display(roi=False, ax=ax[cali.camera], histo_ax=ax[8])
+        cali.image_display(roi=roi, ax=ax[cali.camera], histo_ax=ax[8])
         cali_imgs[channel] = cali
     show_grid(fig, ax)
     return cali_imgs
 
-def calibrate_reflectance(cali_imgs: Dict) -> Dict:
+def calibrate_reflectance(cali_imgs: Dict, clip: float=0.25) -> Dict:
     """Calibrated the reflactance correction coefficients for images
     of the Spectralon reflectance target.
 
     :param subject: directory of target images, defaults to 'reflectance_calibration'
     :type subject: str, optional
+    :param clip: clip the image histogram to the given percentile, defaults to None
+    :type clip: float, optional
     :return: Dictionary of reflectance correction coefficient CalibrationImages
     :rtype: Dict
     """
     channels = list(cali_imgs.keys())
-    title = 'Reflectance Calibration Coefficients'
     cali_coeffs = {}
+    title = 'Reflectance Calibration Coefficients'
     fig, ax = grid_plot(title)
+    title = 'Reflectance Calibration Coefficients Error'
+    fig1, ax1 = grid_plot(title)
     for channel in channels:
         # load the calibration target images
         cali = cali_imgs[channel]
@@ -832,14 +851,16 @@ def calibrate_reflectance(cali_imgs: Dict) -> Dict:
         cali.correct_exposure()
         # compute calibration coefficient image
         cali_coeff = CalibrationImage(cali)
-        cali_coeff.mask_target()
+        cali_coeff.mask_target(clip)
         cali_coeff.compute_reflectance_coefficients()
         cali_coeff.image_display(roi=True, ax=ax[cali_coeff.camera], histo_ax=ax[8])
+        cali_coeff.image_display(roi=True, noise=True, ax=ax1[cali_coeff.camera], histo_ax=ax1[8])
         cali_coeffs[channel] = cali_coeff
     show_grid(fig, ax)
+    show_grid(fig1, ax1)
     return cali_coeffs
 
-def load_sample(subject: str='sample') -> Dict:
+def load_sample(subject: str='sample', roi: bool=False) -> Dict:
     """Load images of the sample.
 
     :param subject: Directory of sample images, defaults to 'sample'
@@ -858,13 +879,75 @@ def load_sample(subject: str='sample') -> Dict:
         print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
         dark_smpl = DarkImage(subject, channel)
         dark_smpl.image_load()
+        # Check exposure times are equal
+        light_exp = smpl.exposure
+        dark_exp = dark_smpl.exposure
+        if light_exp != dark_exp:
+            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
         # subtract the dark frame
         smpl.dark_subtract(dark_smpl)
         # show
-        smpl.image_display(roi=False, ax=ax[smpl.camera], histo_ax=ax[8])
+        smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8])
         smpl_imgs[channel] = smpl
     show_grid(fig, ax)
     return smpl_imgs
+
+def load_dark_frames(subject: str='sample', roi: bool=False) -> Dict:
+    channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
+    dark_imgs = {} # store the calibration objects in a dictionary
+    title = f'{subject} Mean Dark Images'
+    fig, ax = grid_plot(title)
+    title = f'{subject} Std. Dev. Dark Images'
+    fig1, ax1 = grid_plot(title)
+    for channel_path in channels:
+        channel = channel_path.name
+        dark_smpl = DarkImage(subject, channel)
+        dark_smpl.image_load()
+        print(f'Loading {subject}: {dark_smpl.camera} ({int(dark_smpl.cwl)} nm)')
+        # show
+        dark_smpl.image_display(roi=roi, ax=ax[dark_smpl.camera], histo_ax=ax[8])
+        dark_smpl.image_display(noise=True, roi=roi, ax=ax1[dark_smpl.camera], histo_ax=ax1[8])
+        dark_imgs[channel] = dark_smpl
+    show_grid(fig, ax)
+    show_grid(fig1, ax1)
+    return dark_imgs
+
+def get_exposures(smpl_imgs: Dict) -> pd.Series:
+    """Show the exposures for each channel of the given set of channels.
+
+    :param smpl_imgs: Dictionary of LightImage objects
+    :type smpl_imgs: Dict
+    :return: Pandas Series of exposures
+    :rtype: pd.Series
+    """
+    exposures = {}
+    channels = list(smpl_imgs.keys())
+    for channel in channels:
+        smpl = smpl_imgs[channel]
+        exposures[channel] = smpl.exposure
+    exposures = pd.Series(exposures)
+    return exposures
+
+def get_reference_reflectance(cali_coeffs: Dict) -> pd.DataFrame:
+    """Get the reference reflectance and error for each channel.
+
+    :param cali_coeffs: Dictionary of CalibrationImage objects for each channel
+    :type cali_coeffs: Dict
+    :return: Pandas DataFrame of reference reflectance and error for each channel
+    :rtype: pd.DataFrame
+    """
+    ref_val = {}
+    ref_err = {}
+    cwl = {}
+    channels = list(cali_coeffs.keys())
+    for channel in channels:
+        cali_coeff = cali_coeffs[channel]
+        ref_val[channel] = cali_coeff.reference_reflectance
+        ref_err[channel] = cali_coeff.reference_reflectance_err
+        cwl[channel] = cali_coeff.cwl
+    reference = pd.DataFrame({'cwl': cwl, 'reference': ref_val, 'error': ref_err}, index=channels)
+    reference.sort_values('cwl', inplace=True)
+    return reference
 
 def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict) -> Dict:
     """Apply reflectance calibration coefficients to the sample images.
@@ -878,6 +961,8 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict) -> Dict:
     reflectance = {}
     title = 'Sample Reflectance'
     fig, ax = grid_plot(title)
+    title = 'Sample Reflectance Noise'
+    fig1, ax1 = grid_plot(title)
     vmax=0.0
     for channel in channels:
         smpl = smpl_imgs[channel]
@@ -896,7 +981,9 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict) -> Dict:
     for channel in channels:
         refl = reflectance[channel]
         refl.image_display(roi=True, ax=ax[refl.camera], histo_ax=ax[8], vmin=0.0, vmax=vmax)
+        refl.image_display(roi=True, noise=True, ax=ax1[refl.camera], histo_ax=ax1[8])
     show_grid(fig, ax)
+    show_grid(fig1, ax1)
     return reflectance
 
 def normalise_reflectance(refl_imgs: Dict, base_channel: str='6_550') -> Dict:
@@ -964,7 +1051,7 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550') -> Dict:
     show_grid(fig, ax)
     return aligned_imgs
 
-def plot_roi_reflectance(refl_imgs: Dict) -> pd.DataFrame:
+def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=None) -> pd.DataFrame:
     """Plot the reflectance over the Region of Interest
 
     :param refl_imgs: Dictionary of ReflectanceImage objects
@@ -999,6 +1086,16 @@ def plot_roi_reflectance(refl_imgs: Dict) -> pd.DataFrame:
     plt.xlabel('Wavelength (nm)')
     plt.ylabel('Reflectance')
     plt.title('Sample Reflectance Mean ± 1σ over ROI')
+
+    if reference_reflectance is not None:
+        plt.errorbar(
+            x=reference_reflectance.cwl,
+            y=reference_reflectance.reference,
+            yerr=reference_reflectance.error,
+            fmt='o-',
+            ecolor='k',
+            capsize=2.0
+        )
 
 
 def load_geometric_calibration(subject: str='geometric_calibration') -> Dict:
@@ -1040,7 +1137,7 @@ def calibrate_homography(geocs: Dict) -> Dict:
     :rtype: Dict
     """
     channels = list(geocs.keys())
-    destination = channels[0]
+    destination = '6_550'
     cali_dest = geocs[destination]
     coals = {}
     fig, ax = grid_plot('Target Alignment: Overlay')
@@ -1078,7 +1175,7 @@ def apply_coalignment(smpl_imgs: Dict, coals: Dict) -> Dict:
     :rtype: Dict
     """
     channels = list(smpl_imgs.keys())
-    destination = channels[0]
+    destination = '6_550' # TODO should read this from the coals object.
     sample_dest = smpl_imgs[destination]
     fig, ax = grid_plot('Sample Alignment: Overlay')
     fig1, ax1 = grid_plot('Sample Alignment: Error')
