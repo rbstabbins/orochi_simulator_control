@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage import gaussian_filter
 import tifffile as tiff
 import tisgrabber as tis
 
