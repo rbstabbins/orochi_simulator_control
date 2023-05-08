@@ -46,7 +46,6 @@ class Image:
         self.polyroi = None
         self.units = ''
         self.n_imgs = None
-        self.img_stk = None
         self.img_ave = None
         self.img_std = None
 
@@ -91,11 +90,12 @@ class Image:
                 self.roiw = cam_props['roiw']
                 self.roih = cam_props['roih']
 
-        self.img_stk = np.dstack(img_list)
+        img_stk = np.dstack(img_list)
         # average stack
-        self.img_ave = np.mean(self.img_stk, axis=2)
+        self.img_ave = np.mean(img_stk, axis=2)
         # std. stack
-        self.img_std = np.std(self.img_stk, axis=2)
+        self.img_std = np.std(img_stk, axis=2)
+        print(f'Loaded images ({self.img_type}) for: {self.camera} ({int(self.cwl)} nm)')
 
     def roi_image(self, polyroi: bool=False) -> np.ndarray:
         """Returns the region of interest of the image.
@@ -135,7 +135,6 @@ class Image:
             print('Exposure already corrected.')
             return
 
-        self.img_stk = self.img_stk / self.exposure
         self.img_ave = self.img_ave / self.exposure
         self.img_std = self.img_std / self.exposure # assume exposure err. negl.
         self.units = 'DN/s'
@@ -287,13 +286,13 @@ class LightImage(Image):
 
     def dark_subtract(self, dark_image: DarkImage) -> None:
         lst_ave = self.img_ave.copy()
-        self.img_stk -= dark_image.img_stk
         self.img_ave -= dark_image.img_ave
         # quadrture sum the image noise with the dark signal noise
         lght_err = self.img_std/lst_ave
         drk_err = dark_image.img_std/dark_image.img_ave
         self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (drk_err)**2)
         self.units = 'Above-Bias Signal DN'
+        print(f'Subtracting dark frame for: {self.camera} ({int(self.cwl)} nm)')
 
 
 class CalibrationImage(Image):
@@ -321,7 +320,6 @@ class CalibrationImage(Image):
         self.polyroi = source_image.polyroi
         self.units = source_image.units
         self.n_imgs = source_image.n_imgs
-        self.img_stk = source_image.img_stk
         self.img_ave = source_image.img_ave
         self.img_std = source_image.img_std
         self.reference_reflectance = None
@@ -359,13 +357,15 @@ class CalibrationImage(Image):
         calibration target.
         """
         lst_ave = self.img_ave.copy()
-        self.img_stk = self.reference_reflectance / self.img_stk
-        self.img_ave = self.reference_reflectance / self.img_ave
-        lght_err = self.img_std/lst_ave
+        out = np.full(self.img_ave.shape, np.nan)
+        np.divide(self.reference_reflectance, self.img_ave, out=out, where=self.img_ave!=0)
+        self.img_ave = out
+        out = np.full(self.img_std.shape, np.nan)
+        np.divide(self.img_std, lst_ave, out=out, where=lst_ave!=0)
+        lght_err = out
         ref_err = self.reference_reflectance_err/self.reference_reflectance
         self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (ref_err)**2)
         self.units = 'Refl. Coeffs. 1/DN/s'
-
 
 class ReflectanceImage(Image):
     """Class for handling Reflectance Images, inherits Image class."""
@@ -392,7 +392,6 @@ class ReflectanceImage(Image):
         self.polyroi = source_image.polyroi
         self.units = source_image.units
         self.n_imgs = source_image.n_imgs
-        self.img_stk = source_image.img_stk
         self.img_ave = source_image.img_ave
         self.img_std = source_image.img_std
 
@@ -432,7 +431,6 @@ class CoAlignedImage(Image):
         self.exposure = source_image.exposure
         self.units = source_image.units
         self.n_imgs = source_image.n_imgs
-        self.img_stk = source_image.img_stk
         self.img_ave = source_image.img_ave
         self.img_std = source_image.img_std
         self.roix = source_image.roix
@@ -657,7 +655,6 @@ class CoAlignedImage(Image):
 #         self.exposure = source_image.exposure
 #         self.units = source_image.units
 #         self.n_imgs = source_image.n_imgs
-#         self.img_stk = source_image.img_stk
 #         self.img_ave = source_image.img_ave
 #         self.img_std = source_image.img_std
 #         self.roix = source_image.roix
@@ -731,7 +728,6 @@ class CoAlignedImage(Image):
 #         self.exposure = source_image.exposure
 #         self.units = source_image.units
 #         self.n_imgs = source_image.n_imgs
-#         self.img_stk = source_image.img_stk
 #         self.img_ave = source_image.img_ave
 #         self.img_std = source_image.img_std
 #         self.source_geocal = source_geocal
@@ -801,10 +797,17 @@ def show_grid(fig, ax):
     fig.set_size_inches(FIG_W*ax_h/ax_w, FIG_W)
     ax[2].set_axis_off()
     # ax[8].set_axis_off()
-    # fig.tight_layout()
-    fig.show()
+    fig.tight_layout()
+    # fig.show()
 
-def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False) -> Dict:
+def grid_caption(caption_text: str) -> None:
+    # add a caption
+    cap, cax = plt.subplots(figsize=(FIG_W,0.5))
+    cax.set_axis_off()
+    cap.text(0.5, 0.5, caption_text, ha='center', va='center')
+    cap.tight_layout()
+
+def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False, caption: str=None) -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
     cali_imgs = {} # store the calibration objects in a dictionary
     title = 'Spectralon 99% Calibration Target'
@@ -814,7 +817,6 @@ def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bo
         # load the calibration target images
         cali = LightImage(subject, channel)
         cali.image_load()
-        print(f'Loading Calibration Target for: {cali.camera} ({int(cali.cwl)} nm)')
         # load the calibration target dark frames
         dark_cali = DarkImage(subject, channel)
         dark_cali.image_load()
@@ -824,9 +826,11 @@ def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bo
         cali.image_display(roi=roi, ax=ax[cali.camera], histo_ax=ax[8])
         cali_imgs[channel] = cali
     show_grid(fig, ax)
+    if caption is not None:
+        grid_caption(caption)
     return cali_imgs
 
-def calibrate_reflectance(cali_imgs: Dict, clip: float=0.25) -> Dict:
+def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: float=0.25) -> Dict:
     """Calibrated the reflactance correction coefficients for images
     of the Spectralon reflectance target.
 
@@ -841,8 +845,12 @@ def calibrate_reflectance(cali_imgs: Dict, clip: float=0.25) -> Dict:
     cali_coeffs = {}
     title = 'Reflectance Calibration Coefficients'
     fig, ax = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[0])
     title = 'Reflectance Calibration Coefficients Error'
     fig1, ax1 = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[1])
     for channel in channels:
         # load the calibration target images
         cali = cali_imgs[channel]
@@ -1098,7 +1106,7 @@ def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=No
         )
 
 
-def load_geometric_calibration(subject: str='geometric_calibration') -> Dict:
+def load_geometric_calibration(subject: str='geometric_calibration', caption: str=None) -> Dict:
     """Load the geometric calibration images.
 
     :param subject: directory of target images, defaults to 'geometric_calibration'
@@ -1110,6 +1118,8 @@ def load_geometric_calibration(subject: str='geometric_calibration') -> Dict:
     channels = sorted(list(Path('..', 'data',target).glob('[!._]*')))
     geocs = {}
     fig, ax = grid_plot('Geometric Calibration Target')
+    if caption is not None:
+        grid_caption(caption)
     for channel_path in channels:
         channel = channel_path.name
         # load the geometric calibration images
@@ -1127,7 +1137,7 @@ def load_geometric_calibration(subject: str='geometric_calibration') -> Dict:
     show_grid(fig, ax)
     return geocs
 
-def calibrate_homography(geocs: Dict) -> Dict:
+def calibrate_homography(geocs: Dict, caption: Tuple[str, str]=None) -> Dict:
     """Calibrate the homography matrix for images of the geometric calibration
     target.
 
@@ -1141,7 +1151,11 @@ def calibrate_homography(geocs: Dict) -> Dict:
     cali_dest = geocs[destination]
     coals = {}
     fig, ax = grid_plot('Target Alignment: Overlay')
+    if caption is not None:
+        grid_caption(caption[0])
     fig1, ax1 = grid_plot('Target Alignment: Error')
+    if caption is not None:
+        grid_caption(caption[1])
     for channel in channels:
         cali_src = geocs[channel]
         src = CoAlignedImage(cali_src, roi=False)
