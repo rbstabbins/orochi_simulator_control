@@ -167,12 +167,33 @@ class Image:
         """
         if polyroi:
             img = self.roi_image()[self.polyroi]
+        if polyroi:
+            std = self.roi_std()[self.polyroi]
         img_ave_mean = np.nanmean(img, where=np.isfinite(img))
         img_ave_std = np.nanstd(img, where=np.isfinite(img))
-        img_std_mean = np.nanmean(self.img_std, where=np.isfinite(self.img_std))
-        return img_ave_mean, img_ave_std, img_std_mean
+        img_std_mean = np.nanmean(std, where=np.isfinite(img))
 
-    def image_display(self, ax: object=None, histo_ax: object=None, noise: bool=False, roi: bool=False, polyroi: bool=False, vmin: float=None, vmax: float=None) -> None:
+        # standard error on the mean
+
+
+        # weighted average
+        ma_img = np.ma.array(img, mask=(np.isnan(img) * ~np.equal(std, 0.0))) # mask nans
+        # mask where standard deviation is zero
+        ma_std = np.ma.array(std, mask=(np.isnan(img) * ~np.equal(std, 0.0)))
+        img_ave_wt_mean, wt_sum = np.ma.average(ma_img, weights=1.0/ma_std**2, returned=True)
+        img_ave_wt_std = np.sqrt(1.0/wt_sum)
+
+        img_ave_wt_var = np.ma.average((ma_img - img_ave_wt_mean)**2, weights=1.0/ma_std**2)
+        img_ave_wt_std = np.sqrt(img_ave_wt_var)
+
+        return img_ave_mean, img_ave_std, img_std_mean, img_ave_wt_mean, img_ave_wt_std
+
+    def image_display(self,
+                      ax: object=None, histo_ax: object=None,
+                      noise: bool=False, snr: bool=False,
+                      threshold: float=None,
+                      roi: bool=False, polyroi: bool=False,
+                      vmin: float=None, vmax: float=None) -> None:
         """Display the image mean and standard deviation in one frame.
         """
         # set the size of the window
@@ -182,27 +203,39 @@ class Image:
             histo_ax = axs[1]
             fig.suptitle(f'Subject: {self.subject} ({self.img_type})')
 
-        # put the mean frame in
-        if noise:
-            if roi:
-                img = self.roi_std(polyroi)
-            else:
-                img = self.img_std
-            label = self.units+ ' Noise'
+        if roi:
+            img_ave = self.roi_image(polyroi)
+            img_std = self.roi_std(polyroi)
         else:
-            if roi:
-                img = self.roi_image(polyroi)
-            else:
-                img = self.img_ave
+            img_ave = self.img_ave
+            img_std = self.img_std
+
+        if noise:
+            img = img_std
+            label = self.units+ ' Noise'
+        elif snr:
+            out = np.full(img_ave.shape, np.nan)
+            np.divide(img_ave, img_std, out=out, where=img_ave!=0)
+            img = out
+            label = self.units+' SNR'
+        else:
+            img = img_ave
             label = self.units
+
+        if threshold:
+            img = np.where(img < threshold, np.nan, img)
 
         ave = ax.imshow(img, origin='lower', vmin=vmin, vmax=vmax)
         im_ratio = img.shape[0] / img.shape[1]
         cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=label)
 
-        if (label == 'Reflectance'):
+        if ('Noise' in label):
+            cbar.formatter.set_powerlimits((0, 0))
+        elif ('DN' in label):
             cbar.formatter.set_scientific(False)
-        elif (label == 'Above-Bias Signal DN'):
+        elif ('SNR' in label):
+            cbar.formatter.set_scientific(False)
+        elif ('Reflectance' in label):
             cbar.formatter.set_scientific(False)
         else:
             cbar.formatter.set_powerlimits((0, 0))
@@ -210,8 +243,9 @@ class Image:
 
         # add histogram
         counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)
-        histo_ax.hist(bins[:-1], bins, weights=counts, label=f'{int(self.cwl)} nm ({self.camera})', log=True, fill=False, stacked=True, histtype='step')
-        # histo_ax.stairs(counts, bins, label=f'{self.camera}: {int(self.cwl)} nm', log=True)
+        histo_ax.hist(bins[:-1], bins, weights=counts,
+                      label=f'{int(self.cwl)} nm ({self.camera})',
+                      log=True, fill=False, stacked=True, histtype='step')
         histo_ax.set_xlabel(label)
 
         if ax is None:
@@ -406,8 +440,12 @@ class ReflectanceImage(Image):
     def normalise(self, base: Image):
         """Normalise the reflectance image to a base image.
         """
+        # uncertainty quantification
+        self_err = self.img_std/self.img_ave
+        base_err = base.img_std/base.img_ave
         self.img_ave = self.img_ave / base.img_ave
         self.units = 'Normalised Reflectance'
+        self.img_std = self.img_ave * np.sqrt(self_err**2 + base_err**2)
 
 class CoAlignedImage(Image):
     def __init__(self,
@@ -542,10 +580,12 @@ class CoAlignedImage(Image):
 
         # apply the transform
         query_img = self.img_ave
-        height, width = query_img.shape
+        height, width = self.img_ave.shape
         hmgr = self.homography
-        query_reg = cv2.warpPerspective(query_img, hmgr, (width, height))
+        query_reg = cv2.warpPerspective(self.img_ave, hmgr, (width, height))
         self.img_ave = query_reg
+        query_reg = cv2.warpPerspective(self.img_std, hmgr, (width, height))
+        self.img_std = query_reg
         self.roix = self.destination.roix
         self.roiy = self.destination.roiy
         self.roiw = self.destination.roiw
@@ -868,7 +908,7 @@ def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: 
     show_grid(fig1, ax1)
     return cali_coeffs
 
-def load_sample(subject: str='sample', roi: bool=False) -> Dict:
+def load_sample(subject: str='sample', roi: bool=False, caption: str=None, threshold: Tuple[float,float]=(None,None)) -> Dict:
     """Load images of the sample.
 
     :param subject: Directory of sample images, defaults to 'sample'
@@ -880,6 +920,12 @@ def load_sample(subject: str='sample', roi: bool=False) -> Dict:
     smpl_imgs = {} # store the calibration objects in a dictionary
     title = f'{subject} Images'
     fig, ax = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[0])
+    title = f'{subject} Images SNR'
+    fig1, ax1 = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[1])
     for channel_path in channels:
         channel = channel_path.name
         smpl = LightImage(subject, channel)
@@ -895,18 +941,24 @@ def load_sample(subject: str='sample', roi: bool=False) -> Dict:
         # subtract the dark frame
         smpl.dark_subtract(dark_smpl)
         # show
-        smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8])
+        smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
+        smpl.image_display(roi=roi, snr=True, ax=ax1[smpl.camera], histo_ax=ax1[8], threshold=threshold[1])
         smpl_imgs[channel] = smpl
     show_grid(fig, ax)
+    show_grid(fig1, ax1)
     return smpl_imgs
 
-def load_dark_frames(subject: str='sample', roi: bool=False) -> Dict:
+def load_dark_frames(subject: str='sample', roi: bool=False, caption: Tuple[str, str]=None) -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
     dark_imgs = {} # store the calibration objects in a dictionary
     title = f'{subject} Mean Dark Images'
     fig, ax = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[0])
     title = f'{subject} Std. Dev. Dark Images'
     fig1, ax1 = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[1])
     for channel_path in channels:
         channel = channel_path.name
         dark_smpl = DarkImage(subject, channel)
@@ -957,7 +1009,7 @@ def get_reference_reflectance(cali_coeffs: Dict) -> pd.DataFrame:
     reference.sort_values('cwl', inplace=True)
     return reference
 
-def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict) -> Dict:
+def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict, caption: Tuple[str,str,str]=None) -> Dict:
     """Apply reflectance calibration coefficients to the sample images.
 
     :param sample_imgs: Dictionary of LightImage objects (units of DN)
@@ -969,8 +1021,16 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict) -> Dict:
     reflectance = {}
     title = 'Sample Reflectance'
     fig, ax = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[0])
     title = 'Sample Reflectance Noise'
     fig1, ax1 = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[1])
+    title = 'Sample Reflectance SNR'
+    fig2, ax2 = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption[2])
     vmax=0.0
     for channel in channels:
         smpl = smpl_imgs[channel]
@@ -990,11 +1050,13 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict) -> Dict:
         refl = reflectance[channel]
         refl.image_display(roi=True, ax=ax[refl.camera], histo_ax=ax[8], vmin=0.0, vmax=vmax)
         refl.image_display(roi=True, noise=True, ax=ax1[refl.camera], histo_ax=ax1[8])
+        refl.image_display(roi=True, snr=True, ax=ax2[refl.camera], histo_ax=ax2[8], vmin=0.0, vmax=300)
     show_grid(fig, ax)
     show_grid(fig1, ax1)
+    show_grid(fig2, ax2)
     return reflectance
 
-def normalise_reflectance(refl_imgs: Dict, base_channel: str='6_550') -> Dict:
+def normalise_reflectance(refl_imgs: Dict, base_channel: str='6_550', caption: str=None) -> Dict:
     """Normalise the reflectance images to the given channel.
 
     :param refl_imgs: Dictionary of ReflectanceImage objects
@@ -1007,6 +1069,11 @@ def normalise_reflectance(refl_imgs: Dict, base_channel: str='6_550') -> Dict:
     base = refl_imgs['6_550']
     base.img_ave = refl_imgs['6_550'].img_ave.copy()
     fig, ax = grid_plot('Normalised Reflectance')
+    if caption is not None:
+        grid_caption(caption[0])
+    fig1, ax1 = grid_plot('Normalised Reflectance SNR')
+    if caption is not None:
+        grid_caption(caption[1])
     vmax = 1.0
     vmin = 1.0
     norm_imgs = {}
@@ -1029,10 +1096,12 @@ def normalise_reflectance(refl_imgs: Dict, base_channel: str='6_550') -> Dict:
     for channel in channels:
         norm = norm_imgs[channel]
         norm.image_display(roi=True, polyroi=True, ax=ax[norm.camera], histo_ax=ax[8], vmin=vmin, vmax=vmax)
+        norm.image_display(roi=True, polyroi=True, snr=True, ax=ax1[norm.camera], histo_ax=ax1[8])
     show_grid(fig, ax)
+    show_grid(fig1, ax1)
     return norm_imgs
 
-def set_roi(aligned_imgs: Dict, base_channel: str='6_550') -> Dict:
+def set_roi(aligned_imgs: Dict, base_channel: str='6_550', caption: Tuple[str,str]=(None,None)) -> Dict:
     # set region of interest on the base channel
     channels = list(aligned_imgs.keys())
     base = aligned_imgs['6_550']
@@ -1041,6 +1110,11 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550') -> Dict:
     base.set_polyroi()
     # apply the polyroi to each channel:
     fig, ax = grid_plot('Sample Region of Interest Selection')
+    if caption is not None:
+        grid_caption(caption[0])
+    fig1, ax1 = grid_plot('Sample Region of Interest Selection SNR')
+    if caption is not None:
+        grid_caption(caption[1])
     vmax = 0.0
     vmin=1.0
     for channel in channels:
@@ -1056,10 +1130,12 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550') -> Dict:
     for channel in channels:
         smpl = aligned_imgs[channel]
         smpl.image_display(roi=True,polyroi=True, ax=ax[smpl.camera], vmin=vmin, vmax=vmax, histo_ax=ax[8])
+        smpl.image_display(roi=True,polyroi=True, snr=True, ax=ax1[smpl.camera], histo_ax=ax1[8])
     show_grid(fig, ax)
+    show_grid(fig1, ax1)
     return aligned_imgs
 
-def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=None) -> pd.DataFrame:
+def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=None, weighted: bool=False, caption: str=None) -> pd.DataFrame:
     """Plot the reflectance over the Region of Interest
 
     :param refl_imgs: Dictionary of ReflectanceImage objects
@@ -1070,27 +1146,49 @@ def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=No
     cwls = []
     means = []
     stds = []
+    errs = []
+    wt_means = []
+    wt_stds = []
     channels = list(refl_imgs.keys())
     for channel in channels:
         refl_img = refl_imgs[channel]
-        mean, std, _ = refl_img.image_stats(polyroi=True)
+        mean, std, err, wt_mean, wt_std = refl_img.image_stats(polyroi=True)
         cwl = refl_img.cwl
         cwls.append(cwl)
         means.append(mean)
         stds.append(std)
-    results = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'err':stds})
+        errs.append(err)
+        wt_means.append(wt_mean)
+        wt_stds.append(wt_std)
+    results = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'standard deviation':stds, 'err':errs, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
     results.sort_values(by='cwl', inplace=True)
     # results.plot(x='cwl', y='mean', yerr='std')
 
     fig = plt.figure()
     plt.grid(visible=True)
-    plt.errorbar(
-            x=results.cwl,
-            y=results.reflectance,
-            yerr=results.err,
-            fmt='o-',
-            ecolor='k',
-            capsize=2.0)
+    if weighted:
+        plt.errorbar(
+                x=results.cwl,
+                y=results['reflectance (wt)'],
+                yerr=results['std (wt)'],
+                fmt='o-',
+                ecolor='k',
+                capsize=2.0)
+    else:
+        plt.errorbar(
+                x=results.cwl,
+                y=results.reflectance,
+                yerr=results['standard deviation'],
+                fmt='o-',
+                ecolor='k',
+                capsize=2.0)
+        plt.errorbar(
+                x=results.cwl,
+                y=results.reflectance,
+                yerr=results.err,
+                fmt='x-',
+                ecolor='r',
+                capsize=5.0)
     plt.xlabel('Wavelength (nm)')
     plt.ylabel('Reflectance')
     plt.title('Sample Reflectance Mean ± 1σ over ROI')
@@ -1098,13 +1196,21 @@ def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=No
     if reference_reflectance is not None:
         plt.errorbar(
             x=reference_reflectance.cwl,
-            y=reference_reflectance.reference,
-            yerr=reference_reflectance.error,
+            y=reference_reflectance.reflectance,
+            yerr=reference_reflectance['standard deviation'],
             fmt='o-',
             ecolor='k',
             capsize=2.0
         )
+        plt.errorbar(
+                x=results.cwl,
+                y=results.reflectance,
+                yerr=results.err,
+                fmt='x-',
+                ecolor='r',
+                capsize=5.0)
 
+    return results
 
 def load_geometric_calibration(subject: str='geometric_calibration', caption: str=None) -> Dict:
     """Load the geometric calibration images.
@@ -1178,7 +1284,7 @@ def calibrate_homography(geocs: Dict, caption: Tuple[str, str]=None) -> Dict:
     show_grid(fig1, ax1)
     return coals
 
-def apply_coalignment(smpl_imgs: Dict, coals: Dict) -> Dict:
+def apply_coalignment(smpl_imgs: Dict, coals: Dict, caption: Tuple[str, str]=None) -> Dict:
     """Apply homography coalignment to the sample images.
 
     :param smpl_imgs: Dictionary of sample images (units of Reflectance)
@@ -1192,7 +1298,11 @@ def apply_coalignment(smpl_imgs: Dict, coals: Dict) -> Dict:
     destination = '6_550' # TODO should read this from the coals object.
     sample_dest = smpl_imgs[destination]
     fig, ax = grid_plot('Sample Alignment: Overlay')
+    if caption:
+        grid_caption(caption[0])
     fig1, ax1 = grid_plot('Sample Alignment: Error')
+    if caption:
+        grid_caption(caption[1])
     aligned_refl = {}
     for channel in channels:
         sample_src = smpl_imgs[channel]
