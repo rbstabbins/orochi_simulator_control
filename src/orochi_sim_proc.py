@@ -1135,7 +1135,12 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550', caption: Tuple[str,st
     show_grid(fig1, ax1)
     return aligned_imgs
 
-def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=None, weighted: bool=False, caption: str=None) -> pd.DataFrame:
+def plot_roi_reflectance(
+        refl_imgs: Dict,
+        reference_reflectance: pd.DataFrame=None,
+        show_error_limit: bool=False,
+        weighted: bool=False,
+        caption: str=None) -> pd.DataFrame:
     """Plot the reflectance over the Region of Interest
 
     :param refl_imgs: Dictionary of ReflectanceImage objects
@@ -1180,18 +1185,20 @@ def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=No
                 y=results.reflectance,
                 yerr=results['standard deviation'],
                 fmt='o-',
-                ecolor='k',
+                # ecolor='k',
                 capsize=2.0)
-        plt.errorbar(
-                x=results.cwl,
-                y=results.reflectance,
-                yerr=results.err,
-                fmt='x-',
-                ecolor='r',
-                capsize=5.0)
+        if show_error_limit:
+            plt.errorbar(
+                    x=results.cwl,
+                    y=results.reflectance,
+                    yerr=results.err,
+                    fmt='',
+                    linestyle='',
+                    ecolor='r',
+                    capsize=6.0)
     plt.xlabel('Wavelength (nm)')
     plt.ylabel('Reflectance')
-    plt.title('Sample Reflectance Mean ± 1σ over ROI')
+    # plt.title('Sample Reflectance Mean ± 1σ over ROI')
 
     if reference_reflectance is not None:
         plt.errorbar(
@@ -1199,16 +1206,22 @@ def plot_roi_reflectance(refl_imgs: Dict, reference_reflectance: pd.DataFrame=No
             y=reference_reflectance.reflectance,
             yerr=reference_reflectance['standard deviation'],
             fmt='o-',
-            ecolor='k',
             capsize=2.0
         )
-        plt.errorbar(
-                x=results.cwl,
-                y=results.reflectance,
-                yerr=results.err,
-                fmt='x-',
-                ecolor='r',
-                capsize=5.0)
+        if show_error_limit:
+            plt.errorbar(
+                    x=results.cwl,
+                    y=results.reflectance,
+                    yerr=results.err,
+                    fmt='x-',
+                    ecolor='r',
+                    capsize=5.0)
+
+    if caption is not None:
+        grid_caption(caption)
+
+    results['SNR Limit'] = results['reflectance'] / results['err']
+    results['SNR'] = results['reflectance'] / results['standard deviation']
 
     return results
 
