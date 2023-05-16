@@ -151,7 +151,7 @@ class Channel:
         print(f'Frame Rate set to : {set_rate} FPS')
         return ret
 
-    def set_defaults(self, exposure=1.0/100, auto_exposure=1, black_level=26):
+    def set_defaults(self, exposure=1.0/100, auto_exposure=1, black_level=0):
         """Set default properties for each camera.
 
         :param exposure: exposure time (seconds), defaults to 1.0/100
@@ -172,7 +172,7 @@ class Channel:
         self.set_property('Contrast', 'Value', 0, 'Range')
         self.set_property('Sharpness', 'Value', 0, 'Range')
         self.set_property('Gamma', 'Value', 100, 'Range')
-        self.set_property('Gain', 'Value', 0.0, 'AbsoluteValue')
+        self.set_property('Gain', 'Value', 48.0, 'AbsoluteValue')
         self.set_property('Gain', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
@@ -295,7 +295,8 @@ class Channel:
         """
         # self.get_current_state()
         self.ic.IC_StartLive(self.grabber,0)
-        wait_time = 5000 # time in ms to wait to receive frame
+        t_exp = self.get_exposure_value()
+        wait_time = int(np.max([5.0, 2*t_exp])*1E3) # time in ms to wait to receive frame
         if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
             # Get the image data
             imagePtr = self.ic.IC_GetImagePtr(self.grabber)
@@ -319,7 +320,7 @@ class Channel:
                 image = image[:,:,0]
         else:
             print(f'No image recieved in {wait_time} ms')
-            image = None
+            image = np.full([self.height, self.width], 0, dtype=np.uint8)
         self.ic.IC_StopLive(self.grabber)
         return image
 
@@ -624,6 +625,10 @@ def find_camera_rois(cameras: List, roi_size: int=128):
         cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
         xlim = cntr[0]-int(roi_size/2)
         ylim = cntr[1]-int(roi_size/2)
+        if xlim < 0:
+            xlim = 0
+        if ylim < 0:
+            ylim = 0
         print(f'x: {xlim}')
         print(f'y: {ylim}')
         camera.camera_props['roix'] = xlim
