@@ -847,6 +847,13 @@ def grid_caption(caption_text: str) -> None:
     cap.text(0.5, 0.5, caption_text, ha='center', va='center')
     cap.tight_layout()
 
+def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
+    # find the exposures for the given subject and channel
+
+    # for each exposure, load image 1, 2 and the dark mean image
+    # process the images, store the results in a dataframe
+    # return the dataframe
+
 def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False, caption: str=None) -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
     cali_imgs = {} # store the calibration objects in a dictionary
