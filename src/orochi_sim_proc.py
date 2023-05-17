@@ -315,8 +315,8 @@ class DarkImage(Image):
 
 class LightImage(Image):
     """Class for handling Light Images, inherits Image class."""
-    def __init__(self, subject: str, channel: str) -> None:
-        Image.__init__(self,subject, channel, 'img')
+    def __init__(self, subject: str, channel: str, img_type: str='img') -> None:
+        Image.__init__(self,subject, channel, img_type)
 
     def dark_subtract(self, dark_image: DarkImage) -> None:
         lst_ave = self.img_ave.copy()
@@ -848,11 +848,42 @@ def grid_caption(caption_text: str) -> None:
     cap.tight_layout()
 
 def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
-    # find the exposures for the given subject and channel
-
+    # initiliase the variables
+    mean = []
+    std_t = []
+    std_rs = []
+    t_exp = []
+    n_pix = []
+    # find the frames for the given channel
+    frame_1s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_1_calibration.tif')))
+    frame_2s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_2_calibration.tif')))
+    frame_ds = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_d_drk.tif')))
+    # check the numbers in each list are equal
     # for each exposure, load image 1, 2 and the dark mean image
-    # process the images, store the results in a dataframe
+    n_steps = len(frame_1s)
+    for i in range(n_steps):
+        img_1 = Image(subject, channel, frame_1s[i].stem)
+        img_1.image_load()
+        img_2 = Image(subject, channel, frame_2s[i].stem)
+        img_2.image_load()
+        drk   = Image(subject, channel, frame_ds[i].stem)
+        drk.image_load()
+        # process the images, store the results
+        mean.append(np.mean(img_1.img_ave - drk.img_ave))
+        std_t.append(np.std(img_1.img_ave - drk.img_ave))
+        std_rs.append(np.std(img_1.img_ave - img_2.img_ave) / np.sqrt(2))
+        t_exp.append(float(img_1.exposure))
+        n_pix.append(img_1.width * img_1.height)
+    # put results in a dataframe
+    pct_data = pd.DataFrame(data={
+        'exposure': t_exp,
+        'n_pix': n_pix,
+        'mean': mean,
+        'std_t': std_t,
+        'std_rs': std_rs
+    })
     # return the dataframe
+    return pct_data
 
 def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False, caption: str=None) -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
