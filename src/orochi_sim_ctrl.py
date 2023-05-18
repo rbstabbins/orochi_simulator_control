@@ -172,7 +172,7 @@ class Channel:
         self.set_property('Contrast', 'Value', 0, 'Range')
         self.set_property('Sharpness', 'Value', 0, 'Range')
         self.set_property('Gamma', 'Value', 100, 'Range')
-        self.set_property('Gain', 'Value', 48.0, 'AbsoluteValue')
+        self.set_property('Gain', 'Value', 20.0, 'AbsoluteValue')
         self.set_property('Gain', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
@@ -621,20 +621,20 @@ def find_camera_rois(cameras: List, roi_size: int=128):
     """
     for camera in cameras:
         img = camera.image_capture()
-        blurred = gaussian_filter(img, sigma=30)
-        cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
-        xlim = cntr[0]-int(roi_size/2)
-        ylim = cntr[1]-int(roi_size/2)
-        if xlim < 0:
-            xlim = 0
-        if ylim < 0:
-            ylim = 0
-        print(f'x: {xlim}')
-        print(f'y: {ylim}')
-        camera.camera_props['roix'] = xlim
-        camera.camera_props['roiy'] = ylim
-        camera.camera_props['roiw'] = roi_size
-        camera.camera_props['roih'] = roi_size
+        # blurred = gaussian_filter(img, sigma=30)
+        # cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
+        # xlim = cntr[0]-int(roi_size/2)
+        # ylim = cntr[1]-int(roi_size/2)
+        # if xlim < 0:
+        #     xlim = 0
+        # if ylim < 0:
+        #     ylim = 0
+        # print(f'x: {xlim}')
+        # print(f'y: {ylim}')
+        # camera.camera_props['roix'] = xlim
+        # camera.camera_props['roiy'] = ylim
+        # camera.camera_props['roiw'] = roi_size
+        # camera.camera_props['roih'] = roi_size
         cam_num = camera.camera_props['number']
         title = f'Band {cam_num} ({camera.name}) ROI Check: Context'
         camera.show_image(img, title)
