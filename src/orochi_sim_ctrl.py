@@ -33,6 +33,7 @@ class Channel:
         self.connect()
         self.init_camera_stream()
         self.width, self.height, self.buffer_size, self.bpp = self.get_image_info()
+        self.exposure = self.get_exposure_value()
 
     def connect(self):
         """Connect the camera to the grabber.
@@ -295,8 +296,8 @@ class Channel:
         """
         # self.get_current_state()
         self.ic.IC_StartLive(self.grabber,0)
-        t_exp = self.get_exposure_value()
-        wait_time = int(np.max([5.0, 2*t_exp])*1E3) # time in ms to wait to receive frame
+        self.exposure = self.get_exposure_value() # ensure that recorded exposure is correct
+        wait_time = int(np.max([5.0, 2*self.exposure])*1E3) # time in ms to wait to receive frame
         if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
             # Get the image data
             imagePtr = self.ic.IC_GetImagePtr(self.grabber)
@@ -454,7 +455,7 @@ class Channel:
 
     def save_image(self, name, subject, img_type, img_arr):
 
-        exposure = self.get_property('Exposure', 'Value', 'AbsoluteValue')
+        exposure = self.get_property('Exposure', 'Value', 'AbsoluteValue') # note that this already ensures exposure is correct
         metadata={
             'camera': self.camera_props['number'],
             'serial': self.camera_props['serial'],
@@ -462,7 +463,7 @@ class Channel:
             'fwhm': self.camera_props['fwhm'],
             'f-number': self.camera_props['fnumber'],
             'f-length': self.camera_props['flength'],
-            'exposure': exposure,
+            'exposure': exposure, # check that string conversion is sufficient precision
             'image-type': img_type, # image or dark frame or averaged stack
             'subject': subject,
             'roix': self.camera_props['roix'],
@@ -720,7 +721,6 @@ def check_channel_linearity(cameras: List, n_exp: int=50) -> None:
         camera.simple_linearity_check(n_exp)
         print('-----------------------------------')
 
-
 def capture_channel_images(cameras: List, exposures: Dict, subject: str='test',
                            img_type: str='img', repeats: int=1, roi=False,
                            show_img: bool=False, save_img: bool=False) -> None:
@@ -768,7 +768,7 @@ def record_exposures(cameras, exposures, subject) -> None:
         subject_dir.mkdir(parents=True, exist_ok=True)
         filename = Path(subject_dir, 'exposure_seconds.txt')
         with open(filename, 'w') as f:
-                t_exp = str(exposures[camera.name])
+                t_exp = str(exposures[camera.name]) # set formatting
                 f.write(t_exp)
 
 def set_focus(cameras) -> None:

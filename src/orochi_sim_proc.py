@@ -259,6 +259,7 @@ class Image:
 
     def save_tiff(self, save_stack: bool=False):
         """Save the average and error images to TIF files"""
+        # TODO update to control conversion to string, and ensure high precision for exposure time
         metadata={
             'subject': self.subject,
             'image-type': self.img_type,
@@ -852,6 +853,8 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
     mean = []
     std_t = []
     std_rs = []
+    snr = []
+    k_adc = []
     t_exp = []
     n_pix = []
     # find the frames for the given channel
@@ -872,6 +875,8 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
         mean.append(np.mean(img_1.img_ave - drk.img_ave))
         std_t.append(np.std(img_1.img_ave - drk.img_ave))
         std_rs.append(np.std(img_1.img_ave - img_2.img_ave) / np.sqrt(2))
+        snr.append(mean[i]/std_rs[i])
+        k_adc.append(mean[i]/std_rs[i]**2)
         t_exp.append(float(img_1.exposure))
         n_pix.append(img_1.width * img_1.height)
     # put results in a dataframe
@@ -880,7 +885,9 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
         'n_pix': n_pix,
         'mean': mean,
         'std_t': std_t,
-        'std_rs': std_rs
+        'std_rs': std_rs,
+        'snr_rs': snr,
+        'k_adc': k_adc
     })
     # return the dataframe
     return pct_data
