@@ -33,7 +33,7 @@ class Channel:
         self.connect()
         self.init_camera_stream()
         self.width, self.height, self.buffer_size, self.bpp = self.get_image_info()
-        self.exposure = self.get_exposure_value()
+        self.bit_depth = None
 
     def connect(self):
         """Connect the camera to the grabber.
@@ -79,11 +79,18 @@ class Channel:
         self.ic.IC_GetImageDescription(self.grabber, width, height,
                                 bits, col_fmt)
 
+        self.bit_depth = bits.value
         bpp = int(bits.value / 8.0)
         buffer_size = width.value * height.value * bits.value
 
         if width.value == height.value == buffer_size == bpp == 0:
             print('Warning - information 0 - open and close a video stream to initialise camera (Channel.init_camera_stream())')
+
+        # ensure these are all updated
+        self.width = width.value
+        self.height = height.value
+        self.buffer_size = buffer_size
+        self.bpp = bpp
 
         return width.value, height.value, buffer_size, bpp
 
@@ -163,17 +170,25 @@ class Channel:
             26 (10% of the range, for linearity)
         :type black_level: int, optional
         """
-        self.ic.IC_SetVideoFormat(self.grabber, tis.T("Y800 (1920x1200)"))
-        print(f'Color Format set to : "Y800 (1920x1200)"')
+        vid_format = "Y16 (1920x1200)"
+        ret = self.ic.IC_SetVideoFormat(self.grabber, tis.T(vid_format))
+        print(ret)
+        print(f'Video Format set to : {vid_format}')
+        sink_format_id = 4
+        ret = self.ic.IC_SetFormat(self.grabber, ctypes.c_int(sink_format_id))
+        print(ret)
+        print(f'Sink Format set to : "{tis.SinkFormats(sink_format_id)}"')
         ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(30.0)) # set frame rate to 30 FPS
         print(f'Frame Rate set to : {30.0} FPS')
+        self.init_camera_stream()
+        self.get_image_info()
         # brightness is Black Level in DN for the 12-bit range of the detector.
         black_level = black_level*2**4 # convert from 8-bit to 12-bit
         self.set_property('Brightness', 'Value', black_level, 'Range')
         self.set_property('Contrast', 'Value', 0, 'Range')
         self.set_property('Sharpness', 'Value', 0, 'Range')
         self.set_property('Gamma', 'Value', 100, 'Range')
-        self.set_property('Gain', 'Value', 20.0, 'AbsoluteValue')
+        self.set_property('Gain', 'Value', 48.0, 'AbsoluteValue')
         self.set_property('Gain', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
@@ -260,12 +275,37 @@ class Channel:
     def get_current_state(self):
         """Get the current property values of the camera.
         """
+        # Get image info
+        width, height, buffer_size, bpp = self.get_image_info()
+        print(f'Image size: {width} x {height} pixels')
+        print(f'Image buffer size: {buffer_size} bytes')
+        print(f'Bits per pixel: {bpp}')
+
         # Get the frame rate and color mode
         fmt = self.ic.IC_GetFormat(self.grabber)
-        print(f'Color Format: {fmt}')
+        try:
+            print(f'Color Format: {tis.SinkFormats(fmt)}')
+        except:
+            print(f'Color Format: {fmt}')
         fr = self.ic.IC_GetFrameRate(self.grabber)
         print(f'Frame Rate: {fr}')
-        #tis.SinkFormats()
+
+        # # get number of available formats
+        # vid_format_count = self.ic.IC_GetVideoFormatCount(self.grabber)
+        # print(f'Number of available formats: {vid_format_count}')
+
+        # for i in range(vid_format_count):
+        #     szFormatName = (ctypes.c_char*40)()
+        #     iSize = ctypes.c_int(39)
+        #     iIndex = ctypes.c_int(i)
+        #     ret = self.ic.IC_ListVideoFormatbyIndex(self.grabber, szFormatName, iSize, iIndex)
+        #     print(f'Video format by index {iIndex.value}: {szFormatName.value}')
+
+        # # get format
+        # vid_format_idx = ctypes.c_int(17)
+        # ret = self.ic.IC_GetVideoFormat(self.grabber, vid_format_idx)
+        # print(f'Video format: {ret} {vid_format_idx.value}')
+
         self.get_property('Brightness', 'Value', 'Value', True)
         self.get_property('Contrast', 'Value', 'Value', True)
         self.get_property('Sharpness', 'Value', 'Value', True)
@@ -296,8 +336,9 @@ class Channel:
         """
         # self.get_current_state()
         self.ic.IC_StartLive(self.grabber,0)
-        self.exposure = self.get_exposure_value() # ensure that recorded exposure is correct
-        wait_time = int(np.max([5.0, 2*self.exposure])*1E3) # time in ms to wait to receive frame
+        exposure = self.get_exposure_value() # ensure that recorded exposure is correct
+        print(f'Imaging with Exposure: {exposure} s')
+        wait_time = int(np.max([5.0, 2*exposure])*1E3) # time in ms to wait to receive frame
         if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
             # Get the image data
             imagePtr = self.ic.IC_GetImagePtr(self.grabber)
@@ -311,21 +352,28 @@ class Channel:
                             dtype=np.uint8,
                             shape=(self.height, self.width, self.bpp))
 
+            # convert to 16-bit
+            image = image.astype(np.uint16)
+
+            if self.bpp == 2:
+                image = image[:,:,0] + image[:,:,1]
+            elif self.bpp == 3:
+                image = image[:,:,0]
+
             if roi:
                 x = self.camera_props['roix']
                 y = self.camera_props['roiy']
                 w = self.camera_props['roiw']
                 h = self.camera_props['roih']
-                image = image[x:x+w,y:y+h,0]
-            else:
-                image = image[:,:,0]
+                image = image[x:x+w,y:y+h]
         else:
             print(f'No image recieved in {wait_time} ms')
-            image = np.full([self.height, self.width], 0, dtype=np.uint8)
+            image = np.full([self.height, self.width], 1, dtype=np.uint16)
         self.ic.IC_StopLive(self.grabber)
         return image
 
     def show_image(self, img_arr, title):
+        # if the image is 16 bit, convert to 8 bit for display
         fig, ax = plt.subplots(figsize=(5.8, 4.1))
         disp = ax.imshow(img_arr, origin='lower')
         ax.set_title(title)
@@ -380,7 +428,7 @@ class Channel:
                 searching = False # update searcing or continue
                 return t_exp
 
-            if k_quantile >= 255:
+            if k_quantile >= (2.0**self.bit_depth - 1):
                 k_quantile = 5*k_quantile
             elif k_quantile <= 26:
                 k_quantile = k_quantile/5
@@ -621,6 +669,7 @@ def find_camera_rois(cameras: List, roi_size: int=128):
     :type roi_size: int, optional
     """
     for camera in cameras:
+        print(camera.name)
         img = camera.image_capture()
         # blurred = gaussian_filter(img, sigma=30)
         # cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
