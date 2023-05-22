@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 import time
 from typing import Dict, List, Tuple
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -140,6 +141,7 @@ class Channel:
 
         if ret == 1:
             print(f'{property} {element} set to {value.value}')
+            # pass
         elif ret == -2:
             raise ValueError('No video capture device opened')
         elif ret == -4:
@@ -159,7 +161,7 @@ class Channel:
         print(f'Frame Rate set to : {set_rate} FPS')
         return ret
 
-    def set_defaults(self, exposure=1.0/100, auto_exposure=1, black_level=0):
+    def set_defaults(self, exposure=1.0/100, auto_exposure=1, black_level=8):
         """Set default properties for each camera.
 
         :param exposure: exposure time (seconds), defaults to 1.0/100
@@ -188,7 +190,7 @@ class Channel:
         self.set_property('Contrast', 'Value', 0, 'Range')
         self.set_property('Sharpness', 'Value', 0, 'Range')
         self.set_property('Gamma', 'Value', 100, 'Range')
-        self.set_property('Gain', 'Value', 48.0, 'AbsoluteValue')
+        self.set_property('Gain', 'Value', 0.0, 'AbsoluteValue')
         self.set_property('Gain', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
@@ -356,7 +358,7 @@ class Channel:
             image = image.astype(np.uint16)
 
             if self.bpp == 2:
-                image = image[:,:,0] + image[:,:,1]
+                image = (image[:,:,0] | image[:,:,1]<<4)
             elif self.bpp == 3:
                 image = image[:,:,0]
 
@@ -366,8 +368,9 @@ class Channel:
                 w = self.camera_props['roiw']
                 h = self.camera_props['roih']
                 image = image[x:x+w,y:y+h]
+            print(f'+Good exposure {exposure} Image recieved')
         else:
-            print(f'No image recieved in {wait_time} ms')
+            print(f'-Bad exposure {exposure} No image recieved in {wait_time} ms')
             image = np.full([self.height, self.width], 1, dtype=np.uint16)
         self.ic.IC_StopLive(self.grabber)
         return image
@@ -511,7 +514,7 @@ class Channel:
             'fwhm': self.camera_props['fwhm'],
             'f-number': self.camera_props['fnumber'],
             'f-length': self.camera_props['flength'],
-            'exposure': exposure, # check that string conversion is sufficient precision
+            'exposure': f'{exposure:.16f}', # check that string conversion is sufficient precision
             'image-type': img_type, # image or dark frame or averaged stack
             'subject': subject,
             'roix': self.camera_props['roix'],
@@ -671,20 +674,20 @@ def find_camera_rois(cameras: List, roi_size: int=128):
     for camera in cameras:
         print(camera.name)
         img = camera.image_capture()
-        # blurred = gaussian_filter(img, sigma=30)
-        # cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
-        # xlim = cntr[0]-int(roi_size/2)
-        # ylim = cntr[1]-int(roi_size/2)
-        # if xlim < 0:
-        #     xlim = 0
-        # if ylim < 0:
-        #     ylim = 0
-        # print(f'x: {xlim}')
-        # print(f'y: {ylim}')
-        # camera.camera_props['roix'] = xlim
-        # camera.camera_props['roiy'] = ylim
-        # camera.camera_props['roiw'] = roi_size
-        # camera.camera_props['roih'] = roi_size
+        blurred = gaussian_filter(img, sigma=10)
+        cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
+        xlim = cntr[0]-int(roi_size/2)
+        ylim = cntr[1]-int(roi_size/2)
+        if xlim < 0:
+            xlim = 0
+        if ylim < 0:
+            ylim = 0
+        print(f'x: {xlim}')
+        print(f'y: {ylim}')
+        camera.camera_props['roix'] = xlim
+        camera.camera_props['roiy'] = ylim
+        camera.camera_props['roiw'] = roi_size
+        camera.camera_props['roih'] = roi_size
         cam_num = camera.camera_props['number']
         title = f'Band {cam_num} ({camera.name}) ROI Check: Context'
         camera.show_image(img, title)
