@@ -34,7 +34,7 @@ class Channel:
         self.connect()
         self.init_camera_stream()
         self.width, self.height, self.buffer_size, self.bpp = self.get_image_info()
-        self.bit_depth = None
+        self.max_dn = None
 
     def connect(self):
         """Connect the camera to the grabber.
@@ -80,7 +80,10 @@ class Channel:
         self.ic.IC_GetImageDescription(self.grabber, width, height,
                                 bits, col_fmt)
 
-        self.bit_depth = bits.value
+        if bits.value == 8:
+            self.max_dn = 2**bits.value
+        elif bits.value == 16:
+            self.max_dn = 4080
         bpp = int(bits.value / 8.0)
         buffer_size = width.value * height.value * bits.value
 
@@ -384,7 +387,7 @@ class Channel:
         plt.tight_layout()
         plt.show()
 
-    def find_exposure(self, init_t_exp=1.0/500, target=150, n_hot=10,
+    def find_exposure(self, init_t_exp=1.0/500, target=0.80, n_hot=10,
                       tol=1, limit=5, roi=True) -> float:
         """Find the optimal exposure time for a given peak target value.
 
@@ -411,7 +414,9 @@ class Channel:
         print('Initiating search:')
         self.set_property('Exposure', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', init_t_exp, 'AbsoluteValue')
-        t_min, t_max = 0.000065, 50.0 # self.get_exposure_range()
+        t_min, t_max = 1.0/16667, 50.0 # self.get_exposure_range()
+
+        target = target * self.max_dn
 
         while searching == True:
             print(f'Trial {trial_n}:')
@@ -431,7 +436,7 @@ class Channel:
                 searching = False # update searcing or continue
                 return t_exp
 
-            if k_quantile >= (2.0**self.bit_depth - 1):
+            if k_quantile >= self.max_dn:
                 k_quantile = 5*k_quantile
             elif k_quantile <= 26:
                 k_quantile = k_quantile/5
@@ -457,6 +462,64 @@ class Channel:
                 t_exp = self.get_property('Exposure', 'Value', 'AbsoluteValue')
                 searching = False
                 return t_exp
+
+    def find_roi(self, roi_size: int=128) -> None:
+
+        self.find_exposure()
+        img = self.image_capture()
+
+        # get centre of illumination disk
+        blurred = gaussian_filter(img, sigma=10)
+        cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
+
+        # opencv circle detection
+        # convert image to uint8 for cv
+        blurred = blurred.astype(np.uint8)
+        # detect circle using hough transform
+        detected_circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 20, param1 = 50, param2 = 30, minRadius = 10, maxRadius = 100)
+        detected_circles = np.uint16(np.around(detected_circles)) # quantise
+
+        # a, b, r = pt[0], pt[1], pt[2]
+        # # Draw the circumference of the circle.
+        # cv2.circle(img, (a, b), r, (0, 255, 0), 2)
+
+        # # Draw a small circle (of radius 1) to show the center.
+        # cv2.circle(img, (a, b), 1, (0, 0, 255), 3)
+        # cv2.imshow("Detected Circle", img)
+        # cv2.waitKey(0)
+        # # check the circles detected by drawing on the image
+
+        # set the ROI coordinates
+        xlim = cntr[0]-int(roi_size/2)
+        ylim = cntr[1]-int(roi_size/2)
+        if xlim < 0:
+            xlim = 0
+        if ylim < 0:
+            ylim = 0
+        print(f'x: {xlim}')
+        print(f'y: {ylim}')
+        # update the camera properties with the coodinates
+        self.camera_props['roix'] = xlim
+        self.camera_props['roiy'] = ylim
+        self.camera_props['roiw'] = roi_size
+        self.camera_props['roih'] = roi_size
+
+        # check the ROIs
+        cam_num = self.camera_props['number']
+        title = f'Band {cam_num} ({self.name}) ROI Check: Context'
+        self.show_image(img, title)
+        # TODO draw on ROI on image
+        img = self.image_capture(roi=True)
+        title = f'Band {cam_num} ({self.name}) ROI Check: ROI'
+        self.show_image(img, title)
+
+    def check_roi_uniformity(self) -> float:
+        # check the uniformity of the ROI
+        img = self.image_capture(roi=True)
+        mean = np.mean(img)
+        std = np.std(img)
+        print(f'ROI Uniformity: {100.0 * std / mean} %')
+        return std / mean
 
     def simple_linearity_check(self, n_exp: int=50) -> None:
         """Run a simple program to check linearity, by imaging the
@@ -756,6 +819,20 @@ def find_channel_exposures(cameras: List, init_t_exp=1.0, target=150, n_hot=5,
         exposures[camera.name] = exposure
         print('-----------------------------------')
     return exposures
+
+def check_channel_roi_uniformity(cameras: List) -> None:
+    """Check the uniformity of the ROI for each camera.
+
+    :param cameras: List of connected camera objects
+    :type cameras: List
+    """
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        camera.simple_roi_check()
+        print('-----------------------------------')
 
 def check_channel_linearity(cameras: List, n_exp: int=50) -> None:
     """Check the channel linearity.
