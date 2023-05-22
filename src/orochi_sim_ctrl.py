@@ -81,9 +81,9 @@ class Channel:
                                 bits, col_fmt)
 
         if bits.value == 8:
-            self.max_dn = 2**bits.value
+            self.max_dn = 2**bits.value - 1
         elif bits.value == 16:
-            self.max_dn = 4080
+            self.max_dn = 2**12 - 2
         bpp = int(bits.value / 8.0)
         buffer_size = width.value * height.value * bits.value
 
@@ -175,11 +175,15 @@ class Channel:
             26 (10% of the range, for linearity)
         :type black_level: int, optional
         """
+        # 8-bit
+        # vid_format = "Y800 (1920x1200)"
+        # sink_format_id = 0
+        # # 12-bit
         vid_format = "Y16 (1920x1200)"
+        sink_format_id = 4
         ret = self.ic.IC_SetVideoFormat(self.grabber, tis.T(vid_format))
         print(ret)
         print(f'Video Format set to : {vid_format}')
-        sink_format_id = 4
         ret = self.ic.IC_SetFormat(self.grabber, ctypes.c_int(sink_format_id))
         print(ret)
         print(f'Sink Format set to : "{tis.SinkFormats(sink_format_id)}"')
@@ -358,10 +362,13 @@ class Channel:
                             shape=(self.height, self.width, self.bpp))
 
             # convert to 16-bit
-            image = image.astype(np.uint16)
 
             if self.bpp == 2:
-                image = (image[:,:,0] | image[:,:,1]<<4)
+                image = image.astype(np.uint16)
+                image = (image[:,:,0] | image[:,:,1]<<8)
+                image = (image / 16).astype(np.uint16) # convert to 12-bit
+            elif self.bpp == 1:
+                image = image[:,:,0]
             elif self.bpp == 3:
                 image = image[:,:,0]
 
@@ -438,7 +445,7 @@ class Channel:
 
             if k_quantile >= self.max_dn:
                 k_quantile = 5*k_quantile
-            elif k_quantile <= 26:
+            elif k_quantile <= 0.1 * self.max_dn:
                 k_quantile = k_quantile/5
             t_exp_scale = float(target) / float(k_quantile) # get the scaling factor
             last_t_exp = self.get_property('Exposure', 'Value', 'AbsoluteValue')
@@ -465,7 +472,7 @@ class Channel:
 
     def find_roi(self, roi_size: int=128) -> None:
 
-        self.find_exposure()
+        self.find_exposure(roi=False)
         img = self.image_capture()
 
         # get centre of illumination disk
@@ -474,20 +481,22 @@ class Channel:
 
         # opencv circle detection
         # convert image to uint8 for cv
-        blurred = blurred.astype(np.uint8)
+        if self.max_dn == 2**8 - 1:
+            blurred = blurred.astype(np.uint8)
+        elif self.max_dn == 2**12 - 1:
+            blurred = (blurred / 2**4).astype(np.uint8)
         # detect circle using hough transform
-        detected_circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 20, param1 = 50, param2 = 30, minRadius = 10, maxRadius = 100)
+        detected_circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 20, param1 = 20, param2 = 30, minRadius = 30, maxRadius = 128)
         detected_circles = np.uint16(np.around(detected_circles)) # quantise
+        a = detected_circles[0, 0, 0]
+        b = detected_circles[0, 0, 1]
+        r = detected_circles[0, 0, 2]
 
-        # a, b, r = pt[0], pt[1], pt[2]
-        # # Draw the circumference of the circle.
-        # cv2.circle(img, (a, b), r, (0, 255, 0), 2)
+        # Draw the circumference of the circle.
+        cv2.circle(blurred, (a, b), r, (255, 0, 0), 2)
 
-        # # Draw a small circle (of radius 1) to show the center.
-        # cv2.circle(img, (a, b), 1, (0, 0, 255), 3)
-        # cv2.imshow("Detected Circle", img)
-        # cv2.waitKey(0)
-        # # check the circles detected by drawing on the image
+        cntr = (b, a)
+        # roi_size = r
 
         # set the ROI coordinates
         xlim = cntr[0]-int(roi_size/2)
@@ -498,6 +507,8 @@ class Channel:
             ylim = 0
         print(f'x: {xlim}')
         print(f'y: {ylim}')
+        cv2.rectangle(blurred, (ylim, xlim), (ylim+roi_size, xlim+roi_size), (255, 255, 255), 2)
+
         # update the camera properties with the coodinates
         self.camera_props['roix'] = xlim
         self.camera_props['roiy'] = ylim
@@ -507,7 +518,7 @@ class Channel:
         # check the ROIs
         cam_num = self.camera_props['number']
         title = f'Band {cam_num} ({self.name}) ROI Check: Context'
-        self.show_image(img, title)
+        self.show_image(blurred, title)
         # TODO draw on ROI on image
         img = self.image_capture(roi=True)
         title = f'Band {cam_num} ({self.name}) ROI Check: ROI'
@@ -735,28 +746,13 @@ def find_camera_rois(cameras: List, roi_size: int=128):
     :type roi_size: int, optional
     """
     for camera in cameras:
-        print(camera.name)
-        img = camera.image_capture()
-        blurred = gaussian_filter(img, sigma=10)
-        cntr = np.unravel_index(np.argmax(blurred, axis=None), blurred.shape)
-        xlim = cntr[0]-int(roi_size/2)
-        ylim = cntr[1]-int(roi_size/2)
-        if xlim < 0:
-            xlim = 0
-        if ylim < 0:
-            ylim = 0
-        print(f'x: {xlim}')
-        print(f'y: {ylim}')
-        camera.camera_props['roix'] = xlim
-        camera.camera_props['roiy'] = ylim
-        camera.camera_props['roiw'] = roi_size
-        camera.camera_props['roih'] = roi_size
-        cam_num = camera.camera_props['number']
-        title = f'Band {cam_num} ({camera.name}) ROI Check: Context'
-        camera.show_image(img, title)
-        img = camera.image_capture(roi=True)
-        title = f'Band {cam_num} ({camera.name}) ROI Check: ROI'
-        camera.show_image(img, title)
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num} ({camera.name})')
+        print('-----------------------------------')
+        camera.find_roi(roi_size)
+        print('-----------------------------------')
+
     export_camera_config(cameras)
 
 def export_camera_config(cameras: List):
@@ -831,7 +827,7 @@ def check_channel_roi_uniformity(cameras: List) -> None:
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        camera.simple_roi_check()
+        camera.check_roi_uniformity()
         print('-----------------------------------')
 
 def check_channel_linearity(cameras: List, n_exp: int=50) -> None:
