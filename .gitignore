@@ -1,11 +1,9 @@
 notebooks/data
 geometric_calibration_chatgpt.py
 src/__pycache__/
+tisgrabber/samples/__pycache__/
 device.xml
 test.jpg
 notebooks/calibrationtest
 data
 *.py[cod]
-src/__pycache__/orochi_sim_ctrl.cpython-310.pyc
-tisgrabber/samples/__pycache__/tisgrabber.cpython-310.pyc
-tisgrabber/samples/__pycache__/tisgrabber.cpython-310.pyc
