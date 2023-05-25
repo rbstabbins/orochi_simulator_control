@@ -12,6 +12,7 @@ import matplotlib as mpl
 import numpy as np
 import pandas as pd
 from roipoly import RoiPoly, MultiRoi
+import scipy
 import tifffile as tiff
 from typing import Tuple, Dict
 import orochi_sim_ctrl as osc
@@ -853,8 +854,6 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
     mean = []
     std_t = []
     std_rs = []
-    snr = []
-    k_adc = []
     t_exp = []
     n_pix = []
     # find the frames for the given channel
@@ -872,11 +871,14 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
         drk   = Image(subject, channel, frame_ds[i].stem)
         drk.image_load()
         # process the images, store the results
-        mean.append(np.mean(img_1.img_ave - drk.img_ave))
-        std_t.append(np.std(img_1.img_ave - drk.img_ave))
-        std_rs.append(np.std(img_1.img_ave - img_2.img_ave) / np.sqrt(2))
-        snr.append(mean[i]/std_rs[i])
-        k_adc.append(mean[i]/std_rs[i]**2)
+        img_off = img_1.img_ave - drk.img_ave
+        img_off_mean = np.mean(img_off)
+        img_off_std = np.std(img_off)
+        img_pair = img_1.img_ave - img_2.img_ave
+        img_off_std_rs = np.std(img_pair) / np.sqrt(2)
+        mean.append(img_off_mean)
+        std_t.append(img_off_std)
+        std_rs.append(img_off_std_rs)
         t_exp.append(float(img_1.exposure))
         n_pix.append(img_1.width * img_1.height)
     # put results in a dataframe
@@ -886,11 +888,38 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
         'mean': mean,
         'std_t': std_t,
         'std_rs': std_rs,
-        'snr_rs': snr,
-        'k_adc': k_adc
     })
-    # return the dataframe
-    return pct_data
+    pct_data = pct_data.sort_values(by='exposure')
+
+    # get Full Well DN
+        # find where derivative of std_t against mean is zero
+    pct_data['d_std_t'] = pct_data['std_t'].diff()
+    # apply a moving average filter
+    pct_data['d_std_t'] = pct_data['d_std_t'].rolling(20, center=True).mean()
+    # interpolate to find the zero crossing
+    func = scipy.interpolate.interp1d(pct_data['d_std_t'], pct_data['mean'])
+    full_well = func(0.0)
+    # get read noise DN
+    # fit quadratic to std_t vs mean
+    lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.25*full_well].max()][0])
+    fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_t'][0:lim]**2, 2)
+    if fit[2] < 0:
+        fit[2] = 0.0
+    read_noise = np.sqrt(fit[2])
+    # get read corrected shot noise
+    pct_data['std_s'] = np.sqrt(pct_data['std_rs']**2 - read_noise**2)
+    # get sensitivity e-/DN
+    pct_data['k_adc'] = pct_data['mean'] / pct_data['std_s']**2
+    # get mean sensitivity in linear range - 0.1 - 0.9 x Full Well
+    k_adc = pct_data['k_adc'][(pct_data['mean'] < full_well*0.9) & (pct_data['mean'] > full_well*0.1)].mean()
+    # get SNR
+    pct_data['snr'] = pct_data['mean'] / pct_data['std_s']
+    # get electron signals
+    pct_data['e-'] = pct_data['mean'] * k_adc
+    # get electron noise
+    pct_data['e-_noise'] = pct_data['std_s'] * k_adc
+
+    return pct_data, full_well, k_adc, read_noise
 
 def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False, caption: str=None) -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
