@@ -849,7 +849,54 @@ def grid_caption(caption_text: str) -> None:
     cap.text(0.5, 0.5, caption_text, ha='center', va='center')
     cap.tight_layout()
 
-def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
+def load_dtc_frames(subject: str, channel: str) -> pd.DataFrame:
+    # initiliase the variables
+    mean = []
+    std_t = []
+    std_rs = []
+    t_exp = []
+    n_pix = []
+    # find the frames for the given channel
+    frame_1s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_1_calibration.tif')))
+    frame_2s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_2_calibration.tif')))
+    # check the numbers in each list are equal
+    # for each exposure, load image 1, 2 and the dark mean image
+    n_steps = len(frame_1s)
+    for i in range(n_steps):
+        img_1 = Image(subject, channel, frame_1s[i].stem)
+        img_1.image_load()
+        img_2 = Image(subject, channel, frame_2s[i].stem)
+        img_2.image_load()
+        if img_1.img_ave.mean() == 1:
+            continue
+        img_ave = np.mean([img_1.img_ave, img_2.img_ave], axis=0)
+        img_ave_mean = np.mean(img_ave)
+        img_ave_std = np.std(img_ave)
+        img_pair = img_1.img_ave - img_2.img_ave
+        img_ave_std_rs = np.std(img_pair) / np.sqrt(2)
+        mean.append(img_ave_mean)
+        std_t.append(img_ave_std)
+        std_rs.append(img_ave_std_rs)
+        t_exp.append(float(img_1.exposure))
+        n_pix.append(img_1.width * img_1.height)
+    # put results in a dataframe
+    dtc_data = pd.DataFrame(data={
+        'exposure': t_exp,
+        'n_pix': n_pix,
+        'mean': mean,
+        'std_t': std_t,
+        'std_rs': std_rs,
+    })
+    dtc_data = dtc_data.sort_values(by='exposure')
+    # fit read noise
+    # fit linear to std_rs**2 vs exposure
+    fit = np.polyfit(dtc_data['exposure'], dtc_data['std_rs']**2, 1)
+    if fit[-1] < 0:
+        fit[-1] = 0.0
+    read_noise = np.sqrt(fit[-1])
+    return dtc_data, read_noise
+
+def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.DataFrame:
     # initiliase the variables
     mean = []
     std_t = []
@@ -880,7 +927,7 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
         img_off_std = np.std(img_off)
         img_pair = img_1.img_ave - img_2.img_ave
         img_off_std_rs = np.std(img_pair) / np.sqrt(2)
-        dark_mean = np.mean(drk.img_ave) # (bias offset)
+        dark_mean = np.mean(drk.img_ave)
         dark_dsnu = np.std(drk.img_ave)
         mean.append(img_off_mean)
         std_t.append(img_off_std)
@@ -902,25 +949,38 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
     pct_data = pct_data.sort_values(by='exposure')
 
     # get Full Well DN
-        # find where derivative of std_t against mean is zero
-    pct_data['std_t_d'] = pct_data['std_t'].diff()
+    #     # find where derivative of std_t against mean is zero
+    # pct_data['std_t_d'] = pct_data['std_t'].diff()
+    # # apply a moving average filter
+    # pct_data['std_t_d'] = pct_data['std_t_d'].rolling(20, center=True).mean()
+    # # interpolate to find the zero crossing
+    # func = scipy.interpolate.interp1d(pct_data['std_t_d'], pct_data['mean'])
+    # full_well = func(0.0)
 
-    # apply a moving average filter
-    pct_data['std_t_d'] = pct_data['std_t_d'].rolling(20, center=True).mean()
-    # interpolate to find the zero crossing
-    func = scipy.interpolate.interp1d(pct_data['std_t_d'], pct_data['mean'])
-    full_well = func(0.0)
-    # get read noise DN
-    lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.5*full_well].max()][0])
-    # fit quadratic to std_t vs mean
-    # fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_t'][0:lim]**2, 2)
-    # fit quadratic to std_rs vs mean
-    fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_rs'][0:lim]**2, 2)
-    if fit[-1] < 0:
-        fit[-1] = 0.0
-    read_noise = np.sqrt(fit[-1])
-    # assume read noise of 1.45 DN
-    # read_noise = 1.45
+    # set as the mean for the highest valued std_t
+    full_well = pct_data['mean'][pct_data['std_t'] == pct_data['std_t'].max()].mean()
+
+    if read_noise is None:
+        # get read noise DN
+        lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.7*full_well].max()][0])
+
+        # fit quadratic to std_t vs mean
+        # fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_t'][0:lim]**2, 2)
+
+        # fit quadratic to std_rs vs mean
+        # fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_rs'][0:lim]**2, 2)
+        # if fit[-1] < 0:
+        #     fit[-1] = 0.0
+        # read_noise = np.sqrt(fit[-1])
+
+        # fit linear to std_rs**2 vs mean
+        fit = np.polyfit(pct_data['exposure'][0:lim], pct_data['std_rs'][0:lim]**2, 1)
+        if fit[-1] < 0:
+            fit[-1] = 0.0
+        read_noise = np.sqrt(fit[-1])
+        # assume read noise of 1.45 DN
+        # read_noise = 1.45
+
     # get read corrected shot noise
     pct_data['std_s'] = np.sqrt(pct_data['std_rs']**2 - read_noise**2)
     # get sensitivity e-/DN
