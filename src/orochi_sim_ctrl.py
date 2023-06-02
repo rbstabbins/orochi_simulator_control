@@ -192,12 +192,12 @@ class Channel:
         self.init_camera_stream()
         self.get_image_info()
         # brightness is Black Level in DN for the 12-bit range of the detector.
-        black_level = black_level*2**4 # convert from 8-bit to 12-bit
+        # black_level = black_level*2**4 # convert from 8-bit to 12-bit
         self.set_property('Brightness', 'Value', black_level, 'Range')
         self.set_property('Contrast', 'Value', 0, 'Range')
         self.set_property('Sharpness', 'Value', 0, 'Range')
         self.set_property('Gamma', 'Value', 100, 'Range')
-        self.set_property('Gain', 'Value', 0.0, 'AbsoluteValue')
+        self.set_property('Gain', 'Value', 4.27, 'AbsoluteValue')
         self.set_property('Gain', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
@@ -382,6 +382,12 @@ class Channel:
         else:
             print(f'-Bad exposure {exposure} No image recieved in {wait_time} ms')
             image = np.full([self.height, self.width], 1, dtype=np.uint16)
+            if roi:
+                x = self.camera_props['roix']
+                y = self.camera_props['roiy']
+                w = self.camera_props['roiw']
+                h = self.camera_props['roih']
+                image = image[x:x+w,y:y+h]
         self.ic.IC_StopLive(self.grabber)
         return image
 
@@ -395,7 +401,7 @@ class Channel:
         plt.show()
 
     def find_exposure(self, init_t_exp=1.0/500, target=0.80, n_hot=10,
-                      tol=1, limit=5, roi=True) -> float:
+                      tol=1, limit=8, roi=True) -> float:
         """Find the optimal exposure time for a given peak target value.
 
         :param init_t_exp: initial exposure, defaults to 1.0/100
@@ -447,7 +453,11 @@ class Channel:
                 k_quantile = 5*k_quantile
             elif k_quantile <= 0.1 * self.max_dn:
                 k_quantile = k_quantile/5
-            t_exp_scale = float(target) / float(k_quantile) # get the scaling factor
+
+            if k_quantile == 1.0/5:
+                t_exp_scale = 1.5
+            else:
+                t_exp_scale = float(target) / float(k_quantile) # get the scaling factor
             last_t_exp = self.get_property('Exposure', 'Value', 'AbsoluteValue')
             new_t_exp = t_exp_scale * last_t_exp# scale the exposure
             # check the exposure is in range
@@ -483,7 +493,7 @@ class Channel:
         # convert image to uint8 for cv
         if self.max_dn == 2**8 - 1:
             blurred = blurred.astype(np.uint8)
-        elif self.max_dn == 2**12 - 1:
+        elif self.max_dn == 2**12 - 2:
             blurred = (blurred / 2**4).astype(np.uint8)
         # detect circle using hough transform
         detected_circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 20, param1 = 20, param2 = 30, minRadius = 30, maxRadius = 128)
@@ -526,7 +536,9 @@ class Channel:
 
     def check_roi_uniformity(self) -> float:
         # check the uniformity of the ROI
+        self.find_exposure(roi=False)
         img = self.image_capture(roi=True)
+        self.show_image(img, 'ROI Uniformity')
         mean = np.mean(img)
         std = np.std(img)
         print(f'ROI Uniformity: {100.0 * std / mean} %')
