@@ -826,13 +826,13 @@ def grid_plot(title: str=None):
     cam_ax[5] = ax[2][2]
     cam_ax[2] = ax[2][0] # empty
     cam_ax[8] = ax[1][1] # Histogram
-    cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
+    # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
     # fig.suptitle(title)
     return fig, cam_ax
 
 def show_grid(fig, ax):
     # get individual axis dimensions/ratio
-    ax[8].legend()
+    # ax[8].legend()
     fig.tight_layout()
     ax_h, ax_w = ax[0].bbox.height / fig.dpi, ax[0].bbox.width / fig.dpi
     # update figure size to match
@@ -849,10 +849,59 @@ def grid_caption(caption_text: str) -> None:
     cap.text(0.5, 0.5, caption_text, ha='center', va='center')
     cap.tight_layout()
 
-def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
+def load_dtc_frames(subject: str, channel: str) -> pd.DataFrame:
     # initiliase the variables
     mean = []
     std_t = []
+    std_rs = []
+    t_exp = []
+    n_pix = []
+    # find the frames for the given channel
+    frame_1s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_1_calibration.tif')))
+    frame_2s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_2_calibration.tif')))
+    # check the numbers in each list are equal
+    # for each exposure, load image 1, 2 and the dark mean image
+    n_steps = len(frame_1s)
+    for i in range(n_steps):
+        img_1 = Image(subject, channel, frame_1s[i].stem)
+        img_1.image_load()
+        img_2 = Image(subject, channel, frame_2s[i].stem)
+        img_2.image_load()
+        if img_1.img_ave.mean() == 1:
+            continue
+        img_ave = np.mean([img_1.img_ave, img_2.img_ave], axis=0)
+        img_ave_mean = np.mean(img_ave)
+        img_ave_std = np.std(img_ave)
+        img_pair = img_1.img_ave - img_2.img_ave
+        img_ave_std_rs = np.std(img_pair) / np.sqrt(2)
+        mean.append(img_ave_mean)
+        std_t.append(img_ave_std)
+        std_rs.append(img_ave_std_rs)
+        t_exp.append(float(img_1.exposure))
+        n_pix.append(img_1.width * img_1.height)
+    # put results in a dataframe
+    dtc_data = pd.DataFrame(data={
+        'exposure': t_exp,
+        'n_pix': n_pix,
+        'mean': mean,
+        'std_t': std_t,
+        'std_rs': std_rs,
+    })
+    dtc_data = dtc_data.sort_values(by='exposure')
+    # fit read noise
+    # fit linear to std_rs**2 vs exposure
+    fit = np.polyfit(dtc_data['exposure'], dtc_data['std_rs']**2, 1)
+    if fit[-1] < 0:
+        fit[-1] = 0.0
+    read_noise = np.sqrt(fit[-1])
+    return dtc_data, read_noise
+
+def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.DataFrame:
+    # initiliase the variables
+    mean = []
+    std_t = []
+    d_mean = []
+    d_dsnu = []
     std_rs = []
     t_exp = []
     n_pix = []
@@ -871,13 +920,19 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
         drk   = Image(subject, channel, frame_ds[i].stem)
         drk.image_load()
         # process the images, store the results
+        if img_1.img_ave.mean() == 1:
+            continue
         img_off = img_1.img_ave - drk.img_ave
         img_off_mean = np.mean(img_off)
         img_off_std = np.std(img_off)
         img_pair = img_1.img_ave - img_2.img_ave
         img_off_std_rs = np.std(img_pair) / np.sqrt(2)
+        dark_mean = np.mean(drk.img_ave)
+        dark_dsnu = np.std(drk.img_ave)
         mean.append(img_off_mean)
         std_t.append(img_off_std)
+        d_mean.append(dark_mean)
+        d_dsnu.append(dark_dsnu)
         std_rs.append(img_off_std_rs)
         t_exp.append(float(img_1.exposure))
         n_pix.append(img_1.width * img_1.height)
@@ -888,32 +943,56 @@ def load_pct_frames(subject: str, channel: str) -> pd.DataFrame:
         'mean': mean,
         'std_t': std_t,
         'std_rs': std_rs,
+        'd_mean': d_mean,
+        'd_dsnu': d_dsnu
     })
     pct_data = pct_data.sort_values(by='exposure')
 
     # get Full Well DN
-        # find where derivative of std_t against mean is zero
-    pct_data['d_std_t'] = pct_data['std_t'].diff()
-    # apply a moving average filter
-    pct_data['d_std_t'] = pct_data['d_std_t'].rolling(20, center=True).mean()
-    # interpolate to find the zero crossing
-    func = scipy.interpolate.interp1d(pct_data['d_std_t'], pct_data['mean'])
-    full_well = func(0.0)
-    # get read noise DN
-    # fit quadratic to std_t vs mean
-    lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.25*full_well].max()][0])
-    fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_t'][0:lim]**2, 2)
-    if fit[2] < 0:
-        fit[2] = 0.0
-    read_noise = np.sqrt(fit[2])
+    #     # find where derivative of std_t against mean is zero
+    # pct_data['std_t_d'] = pct_data['std_t'].diff()
+    # # apply a moving average filter
+    # pct_data['std_t_d'] = pct_data['std_t_d'].rolling(20, center=True).mean()
+    # # interpolate to find the zero crossing
+    # func = scipy.interpolate.interp1d(pct_data['std_t_d'], pct_data['mean'])
+    # full_well = func(0.0)
+
+    # set as the mean for the highest valued std_t
+    full_well = pct_data['mean'][pct_data['std_t'] == pct_data['std_t'].max()].mean()
+
+    if read_noise is None:
+        # get read noise DN
+        lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.7*full_well].max()][0])
+
+        # fit quadratic to std_t vs mean
+        # fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_t'][0:lim]**2, 2)
+
+        # fit quadratic to std_rs vs mean
+        # fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_rs'][0:lim]**2, 2)
+        # if fit[-1] < 0:
+        #     fit[-1] = 0.0
+        # read_noise = np.sqrt(fit[-1])
+
+        # fit linear to std_rs**2 vs mean
+        fit = np.polyfit(pct_data['exposure'][0:lim], pct_data['std_rs'][0:lim]**2, 1)
+        if fit[-1] < 0:
+            fit[-1] = 0.0
+        read_noise = np.sqrt(fit[-1])
+        # assume read noise of 1.45 DN
+        # read_noise = 1.45
+
     # get read corrected shot noise
     pct_data['std_s'] = np.sqrt(pct_data['std_rs']**2 - read_noise**2)
     # get sensitivity e-/DN
     pct_data['k_adc'] = pct_data['mean'] / pct_data['std_s']**2
     # get mean sensitivity in linear range - 0.1 - 0.9 x Full Well
     k_adc = pct_data['k_adc'][(pct_data['mean'] < full_well*0.9) & (pct_data['mean'] > full_well*0.1)].mean()
+    # convet dark signal to electrons
+    # pct_data['d_mean'] = pct_data['d_mean'] * k_adc
+    # pct_data['d_dsnu'] = pct_data['d_dsnu'] * k_adc
     # get SNR
     pct_data['snr'] = pct_data['mean'] / pct_data['std_s']
+    pct_data['snr_t'] = pct_data['mean'] / pct_data['std_t']
     # get electron signals
     pct_data['e-'] = pct_data['mean'] * k_adc
     # get electron noise
