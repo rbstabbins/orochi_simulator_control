@@ -6,3 +6,5 @@ test.jpg
 device.xml
 notebooks/calibrationtest
 data/
+src/__pycache__/
+tisgrabber/__pycache__/
