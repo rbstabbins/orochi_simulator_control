@@ -427,7 +427,7 @@ class Channel:
         print('Initiating search:')
         self.set_property('Exposure', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', init_t_exp, 'AbsoluteValue')
-        t_min, t_max = 1.0/16667, 50.0 # self.get_exposure_range()
+        t_min, t_max = 1.0/16666, 50.0 # self.get_exposure_range()
 
         target = target * self.max_dn
 
@@ -920,6 +920,35 @@ def set_focus(cameras) -> None:
         camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
         camera.ic.IC_StopLive(camera.grabber)
         print('-----------------------------------')
+
+def check_f_numbers(cameras) -> None:
+    # check against first camera
+    camera = cameras[0]
+    cam_num = camera.number
+    print('-----------------------------------')
+    print(f'Device {cam_num}')
+    print('-----------------------------------')
+    t_exp_cali = camera.find_exposure(tol=0.5,roi=True)
+
+    # prepare histogram
+    fig, ax = plt.subplots(1,1)
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        camera.set_property('Exposure', 'Value', t_exp_cali, 'AbsoluteValue')
+        camera.set_property('Exposure', 'Auto', 0, 'Switch')
+        img = camera.image_capture(roi=True)
+        # plot histogram
+        counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)
+        ax.hist(bins[:-1], bins, weights=counts,
+                      label=f'({cam_num})',
+                      log=True, fill=False, stacked=True, histtype='step')
+    # show legend
+    ax.legend()
+    plt.show()
+
 
 def set_f_numbers(cameras) -> None:
     for camera in cameras:
