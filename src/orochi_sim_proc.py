@@ -817,15 +817,15 @@ def grid_plot(title: str=None):
     cam_ax = {}
     fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W))
     # TODO update this according to camera number
-    cam_ax[2] = ax[0][0]
-    cam_ax[1] = ax[0][1]
-    cam_ax[3] = ax[0][2]
-    cam_ax[4] = ax[1][0]
-    cam_ax[0] = ax[1][2]
-    cam_ax[5] = ax[2][0]
-    cam_ax[7] = ax[2][1]
-    cam_ax[6] = ax[2][2]
+    cam_ax[3] = ax[0][0] # 400
+    cam_ax[6] = ax[0][1] # 950
+    cam_ax[7] = ax[0][2] # 550
+    cam_ax[4] = ax[1][0] # 735
     cam_ax[8] = ax[1][1] # Histogram
+    cam_ax[0] = ax[1][2] # 850
+    cam_ax[5] = ax[2][0] # 650
+    cam_ax[2] = ax[2][1] # 550
+    cam_ax[1] = ax[2][2] # 475
     # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
     # fig.suptitle(title)
     return fig, cam_ax
