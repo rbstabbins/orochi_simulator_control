@@ -164,7 +164,7 @@ class Channel:
         print(f'Frame Rate set to : {set_rate} FPS')
         return ret
 
-    def set_defaults(self, exposure=1.0/100, auto_exposure=1, black_level=8):
+    def set_defaults(self, exposure=1.0/100, auto_exposure=1, black_level=0):
         """Set default properties for each camera.
 
         :param exposure: exposure time (seconds), defaults to 1.0/100
@@ -482,7 +482,7 @@ class Channel:
 
     def find_roi(self, roi_size: int=128) -> None:
 
-        self.find_exposure(roi=False)
+        self.find_exposure(roi=False, target=0.95, n_hot=5000, tol=50) # aim for an overexposed image, i.e. as if thresholding has been applied.
         img = self.image_capture()
 
         # get centre of illumination disk
@@ -496,7 +496,7 @@ class Channel:
         elif self.max_dn == 2**12 - 2:
             blurred = (blurred / 2**4).astype(np.uint8)
         # detect circle using hough transform
-        detected_circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 20, param1 = 20, param2 = 30, minRadius = 30, maxRadius = 128)
+        detected_circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 20, param1 = 20, param2 = 30, minRadius = 30, maxRadius = 100)
         detected_circles = np.uint16(np.around(detected_circles)) # quantise
         a = detected_circles[0, 0, 0]
         b = detected_circles[0, 0, 1]
@@ -537,7 +537,10 @@ class Channel:
     def check_roi_uniformity(self) -> float:
         # check the uniformity of the ROI
         self.find_exposure(roi=False)
-        img = self.image_capture(roi=True)
+        img = (self.image_capture(roi=True)).astype(np.float64)
+        for i in range(24):
+            img += self.image_capture(roi=True)
+        img = img / 25
         self.show_image(img, 'ROI Uniformity')
         mean = np.mean(img)
         std = np.std(img)
