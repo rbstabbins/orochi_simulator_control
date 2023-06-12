@@ -164,7 +164,17 @@ class Channel:
         print(f'Frame Rate set to : {set_rate} FPS')
         return ret
 
-    def set_defaults(self, exposure=1.0/100, auto_exposure=1, black_level=0):
+    def set_exposure(self, exposure: float) -> int:
+        self.set_property('Exposure', 'Auto', 0, 'Switch')
+        self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
+
+    def set_defaults(self, 
+                     bit_depth = 12,
+                     fps=30.0,
+                     black_level=0,
+                     gain=4.27,
+                     exposure=1.0/100, 
+                     auto_exposure=1):
         """Set default properties for each camera.
 
         :param exposure: exposure time (seconds), defaults to 1.0/100
@@ -176,20 +186,22 @@ class Channel:
         :type black_level: int, optional
         """
         # 8-bit
-        # vid_format = "Y800 (1920x1200)"
-        # sink_format_id = 0
-        # # 12-bit
-        vid_format = "Y16 (1920x1200)"
-        sink_format_id = 4
+        if bit_depth == 8:
+            vid_format = "Y800 (1920x1200)"
+            sink_format_id = 0
+        # 12-bit
+        if bit_depth == 12:
+            vid_format = "Y16 (1920x1200)"
+            sink_format_id = 4
         ret = self.ic.IC_SetVideoFormat(self.grabber, tis.T(vid_format))
         print(ret)
         print(f'Video Format set to : {vid_format}')
         ret = self.ic.IC_SetFormat(self.grabber, ctypes.c_int(sink_format_id))
         print(ret)
-        print(f'Sink Format set to : "{tis.SinkFormats(sink_format_id)}"')
-        fps = 5.0
-        ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(fps)) # set frame rate to 30 FPS
-        print(f'Frame Rate set to : {fps} FPS')
+        print(f'Sink Format set to : "{tis.SinkFormats(sink_format_id)}"')        
+        # ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(fps))
+        # print(f'Frame Rate set to : {fps} FPS')
+        ret = self.set_frame_rate(fps)
         self.init_camera_stream()
         self.get_image_info()
         # brightness is Black Level in DN for the 12-bit range of the detector.
@@ -198,7 +210,7 @@ class Channel:
         self.set_property('Contrast', 'Value', 0, 'Range')
         self.set_property('Sharpness', 'Value', 0, 'Range')
         self.set_property('Gamma', 'Value', 100, 'Range')
-        self.set_property('Gain', 'Value', 4.27, 'AbsoluteValue')
+        self.set_property('Gain', 'Value', gain, 'AbsoluteValue')
         self.set_property('Gain', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
         self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
@@ -717,7 +729,7 @@ def connect_cameras(ic, camera_config: Dict=None) -> List:
 
     return cameras
 
-def configure_cameras(cameras: List) -> None:
+def configure_cameras(cameras: List, **kwargs) -> None:
     """Apply default settings to all cameras.
 
     :param cameras: list of camera objects
@@ -728,7 +740,7 @@ def configure_cameras(cameras: List) -> None:
         print('-----------------------------------')
         print(f'Device {cam_num} ({camera.name})')
         print('-----------------------------------')
-        camera.set_defaults()
+        camera.set_defaults(**kwargs)
         camera.get_current_state()
         print('-----------------------------------')
 
