@@ -187,8 +187,9 @@ class Channel:
         ret = self.ic.IC_SetFormat(self.grabber, ctypes.c_int(sink_format_id))
         print(ret)
         print(f'Sink Format set to : "{tis.SinkFormats(sink_format_id)}"')
-        ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(30.0)) # set frame rate to 30 FPS
-        print(f'Frame Rate set to : {30.0} FPS')
+        fps = 5.0
+        ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(fps)) # set frame rate to 30 FPS
+        print(f'Frame Rate set to : {fps} FPS')
         self.init_camera_stream()
         self.get_image_info()
         # brightness is Black Level in DN for the 12-bit range of the detector.
