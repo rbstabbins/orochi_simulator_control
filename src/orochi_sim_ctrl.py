@@ -360,6 +360,8 @@ class Channel:
         self.ic.IC_StartLive(self.grabber,0)
         exposure = self.get_exposure_value() # ensure that recorded exposure is correct
         print(f'Imaging with Exposure: {exposure} s')
+        if exposure > 0.45:
+            self.set_frame_rate(1.0) # set frame rate to 1 fps if exposure is too long
         wait_time = int(np.max([5.0, 2*exposure])*1E3) # time in ms to wait to receive frame
         if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
             # Get the image data
