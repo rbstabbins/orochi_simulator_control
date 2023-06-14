@@ -357,11 +357,11 @@ class Channel:
         :rtype: np.ndarray
         """
         # self.get_current_state()
-        self.ic.IC_StartLive(self.grabber,0)
         exposure = self.get_exposure_value() # ensure that recorded exposure is correct
         print(f'Imaging with Exposure: {exposure} s')
         if exposure > 0.45:
             self.set_frame_rate(1.0) # set frame rate to 1 fps if exposure is too long
+        self.ic.IC_StartLive(self.grabber,0)
         wait_time = int(np.max([5.0, 2*exposure])*1E3) # time in ms to wait to receive frame
         if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
             # Get the image data
@@ -404,6 +404,8 @@ class Channel:
                 h = self.camera_props['roih']
                 image = image[x:x+w,y:y+h]
         self.ic.IC_StopLive(self.grabber)
+        if exposure > 0.45:
+            self.set_frame_rate(30.0) # set frame rate back to 30 fps
         return image
 
     def show_image(self, img_arr, title):
@@ -497,7 +499,8 @@ class Channel:
 
     def find_roi(self, roi_size: int=128) -> None:
 
-        self.find_exposure(roi=False, target=0.95, n_hot=5000, tol=50) # aim for an overexposed image, i.e. as if thresholding has been applied.
+        self.find_exposure(roi=False, target=0.95, n_hot=5000, tol=50, init_t_exp=1.0/500) # aim for an overexposed image, i.e. as if thresholding has been applied.
+        # self.set_exposure(20E-5)
         img = self.image_capture()
 
         # get centre of illumination disk
@@ -977,7 +980,7 @@ def set_f_numbers(cameras) -> None:
         target_f_number = camera.camera_props['fnumber']
         calibration_f_number = 1.4
         # get exposure for given f_number
-        t_exp_cali = camera.find_exposure(tol=0.5,roi=True)
+        t_exp_cali = camera.find_exposure(tol=0.5,roi=True, init_t_exp=1.0/5000)
         # compute exposure for target f_number
         t_exp_target = t_exp_cali *  target_f_number**2 / calibration_f_number**2
         t_exp = t_exp_cali
@@ -987,7 +990,7 @@ def set_f_numbers(cameras) -> None:
             factor = np.sqrt(t_exp_target/t_exp)
             msg = f'Adjust f-number by x{factor} to get f/{target_f_number}, {t_exp_target} s exposure'
             camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
-            t_exp = camera.find_exposure(tol=0.5,roi=True)
+            t_exp = camera.find_exposure(tol=0.5,roi=True, init_t_exp=t_exp_target)
             if np.isclose(t_exp, t_exp_target, atol=0.0, rtol=0.02):
                 print('Success!')
                 searching = False
