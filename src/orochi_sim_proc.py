@@ -817,14 +817,14 @@ def grid_plot(title: str=None):
     cam_ax = {}
     fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W))
     # TODO update this according to camera number
-    cam_ax[3] = ax[0][0] # 400
-    cam_ax[6] = ax[0][1] # 950
+    cam_ax[2] = ax[0][0] # 400
+    cam_ax[5] = ax[0][1] # 950
     cam_ax[7] = ax[0][2] # 550
     cam_ax[4] = ax[1][0] # 735
     cam_ax[8] = ax[1][1] # Histogram
     cam_ax[0] = ax[1][2] # 850
-    cam_ax[5] = ax[2][0] # 650
-    cam_ax[2] = ax[2][1] # 550
+    cam_ax[6] = ax[2][0] # 650
+    cam_ax[3] = ax[2][1] # 550
     cam_ax[1] = ax[2][2] # 475
     # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
     # fig.suptitle(title)
@@ -890,11 +890,16 @@ def load_dtc_frames(subject: str, channel: str) -> pd.DataFrame:
     dtc_data = dtc_data.sort_values(by='exposure')
     # fit read noise
     # fit linear to std_rs**2 vs exposure
-    fit = np.polyfit(dtc_data['exposure'], dtc_data['std_rs']**2, 1)
+    fit = np.polyfit(dtc_data['exposure'], dtc_data['std_rs']**2, 1, w=1/dtc_data['std_rs']**2)
     if fit[-1] < 0:
         fit[-1] = 0.0
     read_noise = np.sqrt(fit[-1])
-    return dtc_data, read_noise
+
+    # fit linear to mean vs exposure for dark current (DN/s)
+    fit = np.polyfit(dtc_data['exposure'], dtc_data['mean'], 1)
+    dark_current = fit[0]
+
+    return dtc_data, read_noise, dark_current
 
 def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.DataFrame:
     # initiliase the variables
@@ -975,9 +980,11 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
 
         # fit linear to std_rs**2 vs mean
         fit = np.polyfit(pct_data['exposure'][0:lim], pct_data['std_rs'][0:lim]**2, 1)
+
         if fit[-1] < 0:
             fit[-1] = 0.0
         read_noise = np.sqrt(fit[-1])
+        
         # assume read noise of 1.45 DN
         # read_noise = 1.45
 
