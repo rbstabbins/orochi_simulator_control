@@ -953,15 +953,6 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
     })
     pct_data = pct_data.sort_values(by='exposure')
 
-    # get Full Well DN
-    #     # find where derivative of std_t against mean is zero
-    # pct_data['std_t_d'] = pct_data['std_t'].diff()
-    # # apply a moving average filter
-    # pct_data['std_t_d'] = pct_data['std_t_d'].rolling(20, center=True).mean()
-    # # interpolate to find the zero crossing
-    # func = scipy.interpolate.interp1d(pct_data['std_t_d'], pct_data['mean'])
-    # full_well = func(0.0)
-
     # set as the mean for the highest valued std_t
     full_well = pct_data['mean'][pct_data['std_t'] == pct_data['std_t'].max()].mean()
 
@@ -990,10 +981,20 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
 
     # get read corrected shot noise
     pct_data['std_s'] = np.sqrt(pct_data['std_rs']**2 - read_noise**2)
+
     # get sensitivity e-/DN
     pct_data['k_adc'] = pct_data['mean'] / pct_data['std_s']**2
-    # get mean sensitivity in linear range - 0.1 - 0.9 x Full Well
-    k_adc = pct_data['k_adc'][(pct_data['mean'] < full_well*0.9) & (pct_data['mean'] > full_well*0.1)].mean()
+
+    # get mean sensitivity in linear range - 0.05 - 0.95 x Full Well
+    lin_range = (pct_data['mean'] < full_well*0.95) & (pct_data['mean'] > full_well*0.05)
+    k_adc = pct_data['k_adc'][lin_range].mean()
+
+    # get linearity
+    fit = np.polyfit(pct_data['exposure'][lin_range], pct_data['mean'][lin_range], 1, w=1.0/(pct_data['mean'][lin_range])**2)
+    pct_data['linearity'] = 100.0*((pct_data['mean'] - (fit[1]+fit[0]*pct_data['exposure'])) / (fit[1]+fit[0]*pct_data['exposure']))
+    lin_min = pct_data['linearity'][lin_range].min()
+    lin_max = pct_data['linearity'][lin_range].max()
+
     # convet dark signal to electrons
     # pct_data['d_mean'] = pct_data['d_mean'] * k_adc
     # pct_data['d_dsnu'] = pct_data['d_dsnu'] * k_adc
@@ -1005,7 +1006,7 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
     # get electron noise
     pct_data['e-_noise'] = pct_data['std_s'] * k_adc
 
-    return pct_data, full_well, k_adc, read_noise
+    return pct_data, full_well, k_adc, read_noise, lin_min, lin_max
 
 def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False, caption: str=None) -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
