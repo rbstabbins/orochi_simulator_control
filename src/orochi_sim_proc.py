@@ -991,6 +991,8 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
 
     # get linearity
     fit = np.polyfit(pct_data['exposure'][lin_range], pct_data['mean'][lin_range], 1, w=1.0/(pct_data['mean'][lin_range])**2)
+    offset = fit[1]
+    response = fit[0]
     pct_data['linearity'] = 100.0*((pct_data['mean'] - (fit[1]+fit[0]*pct_data['exposure'])) / (fit[1]+fit[0]*pct_data['exposure']))
     lin_min = pct_data['linearity'][lin_range].min()
     lin_max = pct_data['linearity'][lin_range].max()
@@ -1006,7 +1008,7 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
     # get electron noise
     pct_data['e-_noise'] = pct_data['std_s'] * k_adc
 
-    return pct_data, full_well, k_adc, read_noise, lin_min, lin_max
+    return pct_data, full_well, k_adc, read_noise, lin_min, lin_max, offset, response
 
 def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False, caption: str=None) -> Dict:
     channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
