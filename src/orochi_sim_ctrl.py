@@ -555,15 +555,31 @@ class Channel:
     def check_roi_uniformity(self) -> float:
         # check the uniformity of the ROI
         self.find_exposure(roi=False)
-        img = (self.image_capture(roi=True)).astype(np.float64)
-        for i in range(24):
-            img += self.image_capture(roi=True)
-        img = img / 25
+        img, _ = self.image_capture_repeat(n=25, roi=True)
         self.show_image(img, 'ROI Uniformity')
         mean = np.mean(img)
         std = np.std(img)
         print(f'ROI Uniformity: {100.0 * std / mean} %')
         return std / mean
+    
+    def image_capture_repeat(self, n: int=25, 
+                             roi: bool=True) -> Tuple[np.ndarray, np.ndarray]:
+        """Capture n repeat images, and return the mean and standard deviation
+        image, optiuonally over the ROI only.
+
+        :param n: number of repeat images, defaults to 25
+        :type n: int, optional
+        :param roi: if true, return image over ROI, defaults to True
+        :type roi: bool, optional
+        :return: mean and standard deviation images
+        :rtype: Tuple[np.ndarray, np.ndarray]
+        """    
+        imgs = []
+        imgs = [self.image_capture(roi=True) for i in range(n)]
+        img_stk = np.dstack(imgs).astype(np.float64)
+        mean = np.mean(img_stk, axis=2)
+        std = np.std(img_stk, axis=2)
+        return mean, std
 
     def simple_linearity_check(self, n_exp: int=50) -> None:
         """Run a simple program to check linearity, by imaging the
@@ -808,8 +824,6 @@ def prepare_reflectance_calibration(ic):
     title = 'Imaging Calibration Target'
     msg = 'Check Calibration Target is in place'
     ic.IC_MsgBox(tis.T(msg), tis.T(title))
-    msg = 'Check Lens Caps are removed'
-    ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
 def prepare_geometric_calibration(ic):
     title = 'Imaging Geometric Calibration Target'
@@ -830,7 +844,7 @@ def prepare_dark_acquisition(ic):
     msg = 'Check Lens Caps are in place'
     ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
-def find_channel_exposures(cameras: List, init_t_exp=1.0, target=150, n_hot=5,
+def find_channel_exposures(cameras: List, init_t_exp=0.3, target=3000, n_hot=5,
                       tol=1, limit=10, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
 
