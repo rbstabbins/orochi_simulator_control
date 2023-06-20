@@ -576,7 +576,7 @@ class Channel:
         """    
         imgs = []
         imgs = [self.image_capture(roi=True) for i in range(n)]
-        img_stk = np.dstack(imgs).astype(np.float64)
+        img_stk = np.dstack(imgs).astype(np.float32)
         mean = np.mean(img_stk, axis=2)
         std = np.std(img_stk, axis=2)
         return mean, std
@@ -844,7 +844,7 @@ def prepare_dark_acquisition(ic):
     msg = 'Check Lens Caps are in place'
     ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
-def find_channel_exposures(cameras: List, init_t_exp=0.3, target=3000, n_hot=5,
+def find_channel_exposures(cameras: List, init_t_exp=0.3, target=0.8, n_hot=5,
                       tol=1, limit=10, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
 
