@@ -50,19 +50,22 @@ class Image:
         self.img_ave = None
         self.img_std = None
 
-    def image_load(self):
+    def image_load(self, n_imgs: int=None, mode: str='mean') -> None:
         """Load images from the subject directory for the given type,
         populate properties, and compute averages and standard deviation.
         """
         # get list of images of given type in the subject directory
         files = list(self.dir.glob('*'+self.img_type+'.tif'))
         # set n_imgs
-        self.n_imgs = len(files)
+        if n_imgs != None:
+            self.n_imgs = len(files)
+        else:
+            self.n_imgs = n_imgs
         self.units = 'Raw DN'
         img_list = []
         if files == []:
             raise FileNotFoundError(f'Error: no {self.img_type} images found in {self.dir}')
-        for f, file in enumerate(files):
+        for f, file in enumerate(files[:n_imgs]):
             img = tiff.TiffFile(file)
             img_arr = img.asarray()
             img_list.append(img_arr)
@@ -93,10 +96,13 @@ class Image:
 
         img_stk = np.dstack(img_list)
         # average stack
-        self.img_ave = np.mean(img_stk, axis=2)
+        if mode == 'mean':
+            self.img_ave = np.mean(img_stk, axis=2)
+        elif mode == 'median':
+            self.img_ave = np.median(img_stk, axis=2)
         # std. stack
         self.img_std = np.std(img_stk, axis=2)
-        print(f'Loaded images ({self.img_type}) for: {self.camera} ({int(self.cwl)} nm)')
+        print(f'Loaded {f+1} images ({self.img_type}) for: {self.camera} ({int(self.cwl)} nm)')
 
     def roi_image(self, polyroi: bool=False) -> np.ndarray:
         """Returns the region of interest of the image.
@@ -199,7 +205,7 @@ class Image:
         """
         # set the size of the window
         if ax is None:
-            fig, axs = plt.subplots(1,1,figsize=(FIG_W/2, FIG_W))
+            fig, axs = plt.subplots(2,1,figsize=(FIG_W/2, FIG_W))
             ax = axs[0]
             histo_ax = axs[1]
             fig.suptitle(f'Subject: {self.subject} ({self.img_type})')
@@ -298,8 +304,8 @@ class Image:
 class DarkImage(Image):
     """Class for handling Dark Images, inherits Image class.
     """
-    def __init__(self, subject: str, channel: str) -> None:
-        Image.__init__(self,subject, channel, 'drk')
+    def __init__(self, subject: str, channel: str, img_type: str='drk') -> None:
+        Image.__init__(self,subject, channel, img_type)
         self.dark = None
         self.dsnu = None
 
