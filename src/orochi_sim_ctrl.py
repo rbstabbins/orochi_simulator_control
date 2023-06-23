@@ -554,7 +554,7 @@ class Channel:
 
     def check_roi_uniformity(self) -> float:
         # check the uniformity of the ROI
-        self.find_exposure(roi=False)
+        # self.find_exposure(roi=False)
         img, _ = self.image_capture_repeat(n=25, roi=True)
         self.show_image(img, 'ROI Uniformity')
         mean = np.mean(img)
@@ -575,7 +575,8 @@ class Channel:
         :rtype: Tuple[np.ndarray, np.ndarray]
         """    
         imgs = []
-        imgs = [self.image_capture(roi=True) for i in range(n)]
+        print(roi)
+        imgs = [self.image_capture(roi=roi) for i in range(n)]
         img_stk = np.dstack(imgs).astype(np.float32)
         mean = np.mean(img_stk, axis=2)
         std = np.std(img_stk, axis=2)

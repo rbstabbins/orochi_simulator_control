@@ -287,7 +287,7 @@ class Image:
         filename = cwl_str+'_'+name+'_'+self.img_type
         img_file =str(Path(self.dir, filename).with_suffix('.tif'))
         # write camera properties to TIF using ImageJ metadata
-        out_img = self.img_ave.astype(np.float32)
+        out_img = self.img_ave # .astype(np.float32)
         tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
         print(f'Mean image written to {img_file}')
 
