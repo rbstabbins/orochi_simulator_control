@@ -143,8 +143,8 @@ class Channel:
         time.sleep(wait)
 
         if ret == 1:
-            print(f'{property} {element} set to {value.value}')
-            # pass
+            # print(f'{property} {element} set to {value.value}')
+            pass
         elif ret == -2:
             raise ValueError('No video capture device opened')
         elif ret == -4:
@@ -477,6 +477,7 @@ class Channel:
                 t_exp_scale = float(target) / float(k_quantile) # get the scaling factor
             last_t_exp = self.get_property('Exposure', 'Value', 'AbsoluteValue')
             new_t_exp = t_exp_scale * last_t_exp# scale the exposure
+            print(f'Expected new quantile: {t_exp_scale} x {k_quantile} = {t_exp_scale*k_quantile}')
             # check the exposure is in range
             if new_t_exp < t_min:
                 print(f'Exposure out of range. Setting to {t_min}')
@@ -964,7 +965,7 @@ def check_f_numbers(cameras) -> None:
     print('-----------------------------------')
     print(f'Device {cam_num}')
     print('-----------------------------------')
-    t_exp_cali = camera.find_exposure(tol=0.5,roi=True)
+    t_exp_cali = camera.find_exposure(init_t_exp=1.0/16600, target=0.80, n_hot=10, tol=0.5, limit=10, roi=True)
 
     # prepare histogram
     fig, ax = plt.subplots(1,1)
@@ -986,6 +987,42 @@ def check_f_numbers(cameras) -> None:
     plt.show()
 
 
+def set_f_numbers_by_exp(cameras) -> None:
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        target_f_number = camera.camera_props['fnumber']
+        calibration_f_number = 1.4
+        # get exposure for given f_number
+        t_exp_cali = camera.find_exposure(roi=True, init_t_exp=1.0/16600, limit=16, target=0.8, n_hot=10, tol=10.0)
+        # compute exposure for target f_number
+        t_exp_target = t_exp_cali *  target_f_number**2 / calibration_f_number**2
+        # compute level for target f_number
+        lvl_cali = 0.8 * camera.max_dn
+        lvl_target = lvl_cali * calibration_f_number**2 / target_f_number**2
+        t_exp = t_exp_cali
+        searching = True
+        while searching:
+            title = f'{cam_num} F-Number Calibration'
+            factor = np.sqrt(t_exp_target/t_exp)
+            msg = f'Adjust f-number by x{factor} to get f/{target_f_number}, {t_exp_target} s exposure'
+            camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
+            t_exp = camera.find_exposure(roi=True, init_t_exp=t_exp_target, limit=16, target=0.8, n_hot=10, tol=10.0)
+            if np.isclose(t_exp, t_exp_target, atol=0.0, rtol=0.025):
+                print('Success!')
+                msg = f'f/{target_f_number} achieved: {t_exp} s (Target: {t_exp_target} s)'
+                camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
+                camera.set_exposure(t_exp_cali)
+                img_arr = camera.image_capture(roi=True)
+                k = 1 - 10.0/(img_arr.size)
+                lvl = np.round(np.quantile(img_arr, k)) # evaluate the quantile
+                msg = f'Validation: f/{target_f_number} level: {lvl} DN (Target: {lvl_target} DN)'
+                camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
+                searching = False
+        print('-----------------------------------')
+
 def set_f_numbers(cameras) -> None:
     for camera in cameras:
         cam_num = camera.number
@@ -995,19 +1032,31 @@ def set_f_numbers(cameras) -> None:
         target_f_number = camera.camera_props['fnumber']
         calibration_f_number = 1.4
         # get exposure for given f_number
-        t_exp_cali = camera.find_exposure(tol=0.5,roi=True, init_t_exp=1.0/5000)
-        # compute exposure for target f_number
+        n_hot=10
+        target=0.8
+        t_exp_cali = camera.find_exposure(roi=True, init_t_exp=1.0/16600, limit=16, target=target, n_hot=n_hot, tol=2.0)
+        # compute expected exposure for target f_number
         t_exp_target = t_exp_cali *  target_f_number**2 / calibration_f_number**2
-        t_exp = t_exp_cali
+        # compute target DN for target f_number
+        lvl_cali = target * camera.max_dn
+        lvl_target = lvl_cali * calibration_f_number**2 / target_f_number**2
+        lvl = lvl_cali
         searching = True
         while searching:
             title = f'{cam_num} F-Number Calibration'
-            factor = np.sqrt(t_exp_target/t_exp)
-            msg = f'Adjust f-number by x{factor} to get f/{target_f_number}, {t_exp_target} s exposure'
+            factor = np.sqrt(lvl/lvl_target)
+            msg = f'Adjust f-number by x{factor} to get f/{target_f_number}, {lvl_target} DN exposure from {lvl} DN'
             camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
-            t_exp = camera.find_exposure(tol=0.5,roi=True, init_t_exp=t_exp_target)
-            if np.isclose(t_exp, t_exp_target, atol=0.0, rtol=0.02):
+            img_arr = camera.image_capture(roi=True)
+            k = 1 - n_hot/(img_arr.size)
+            lvl = np.round(np.quantile(img_arr, k)) # evaluate the quantile
+            if np.isclose(lvl, lvl_target, atol=0.0, rtol=0.025):
                 print('Success!')
+                msg = f'f/{target_f_number} achieved: {lvl} DN (Target: {lvl_target} DN)'
+                camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
+                new_t_exp = camera.find_exposure(roi=True, init_t_exp=1.0/16600, limit=16, target=target, n_hot=n_hot, tol=2.0)
+                msg = f'Validation: f/{target_f_number} exposure: {new_t_exp} s (Target: {t_exp_target} DN)'
+                camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
                 searching = False
         print('-----------------------------------')
 
