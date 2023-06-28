@@ -555,7 +555,7 @@ class Channel:
 
     def check_roi_uniformity(self) -> float:
         # check the uniformity of the ROI
-        # self.find_exposure(roi=False)
+        self.find_exposure(roi=True)
         img, _ = self.image_capture_repeat(n=25, roi=True)
         self.show_image(img, 'ROI Uniformity')
         mean = np.mean(img)
@@ -846,7 +846,7 @@ def prepare_dark_acquisition(ic):
     msg = 'Check Lens Caps are in place'
     ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
-def find_channel_exposures(cameras: List, init_t_exp=0.3, target=0.8, n_hot=5,
+def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
                       tol=1, limit=10, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
 
