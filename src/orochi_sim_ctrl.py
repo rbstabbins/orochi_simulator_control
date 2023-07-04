@@ -171,7 +171,7 @@ class Channel:
     def set_defaults(self, 
                      bit_depth = 12,
                      fps=30.0,
-                     black_level=0,
+                     black_level=4,
                      gain=4.27,
                      exposure=1.0/100, 
                      auto_exposure=1):
