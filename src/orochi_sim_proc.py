@@ -65,8 +65,11 @@ class Image:
         img_list = []
         if files == []:
             raise FileNotFoundError(f'Error: no {self.img_type} images found in {self.dir}')
-        for f, file in enumerate(files[:n_imgs]):
-            img = tiff.TiffFile(file)
+        for f, file in enumerate(files[:self.n_imgs]):
+            try:
+                img = tiff.TiffFile(file)
+            except:
+                print('bad file')
             img_arr = img.asarray()
             img_list.append(img_arr)
             meta = img.imagej_metadata
@@ -928,7 +931,10 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
         img_1.image_load()
         img_2 = Image(subject, channel, frame_2s[i].stem)
         img_2.image_load()
-        drk   = Image(subject, channel, frame_ds[i].stem)
+        try:
+            drk  = Image(subject, channel, frame_ds[i].stem)
+        except:
+            print('bad dark')
         drk.image_load()
         # process the images, store the results
         if img_1.img_ave.mean() == 1:
