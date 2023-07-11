@@ -57,7 +57,7 @@ class Image:
         # get list of images of given type in the subject directory
         files = list(self.dir.glob('*'+self.img_type+'.tif'))
         # set n_imgs
-        if n_imgs != None:
+        if n_imgs == None:
             self.n_imgs = len(files)
         else:
             self.n_imgs = n_imgs
