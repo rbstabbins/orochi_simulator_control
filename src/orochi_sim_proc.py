@@ -907,8 +907,9 @@ def load_dtc_frames(subject: str, channel: str) -> pd.DataFrame:
     # fit linear to mean vs exposure for dark current (DN/s)
     fit = np.polyfit(dtc_data['exposure'], dtc_data['mean'], 1)
     dark_current = fit[0]
+    bias = fit[1]
 
-    return dtc_data, read_noise, dark_current
+    return dtc_data, read_noise, dark_current, bias
 
 def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.DataFrame:
     # initiliase the variables
