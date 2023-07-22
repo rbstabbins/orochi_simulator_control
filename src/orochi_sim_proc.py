@@ -688,78 +688,81 @@ class CoAlignedImage(Image):
     #     self.homography = homography
     #     self.matches = imMatches
 
-# class GeoCalImage(Image):
-#     def __init__(self, source_image: LightImage, roi: bool=False) -> None:
-#         self.dir = source_image.dir
-#         # TODO check subject directory exists
-#         self.subject = source_image.subject
-#         self.channel = source_image.channel
-#         self.img_type = 'geo'
-#         self.camera = source_image.camera
-#         self.serial = source_image.serial
-#         self.width = source_image.width
-#         self.height = source_image.height
-#         self.cwl = source_image.cwl
-#         self.fwhm = source_image.fwhm
-#         self.fnumber = source_image.fnumber
-#         self.flength = source_image.flength
-#         self.exposure = source_image.exposure
-#         self.units = source_image.units
-#         self.n_imgs = source_image.n_imgs
-#         self.img_ave = source_image.img_ave
-#         self.img_std = source_image.img_std
-#         self.roix = source_image.roix
-#         self.roiy = source_image.roiy
-#         self.roiw = source_image.roiw
-#         self.roih = source_image.roih
-#         self.roi = roi
-#         self.crows = 4
-#         self.ccols = 3
-#         self.chkrsize = 5.0E-3
-#         self.all_corners = None
-#         self.object_points = self.define_calibration_points()
-#         self.corner_points = self.find_corners()
-#         self.mtx, self.dist, self.rvecs, self.tvecs = None, None, None, None
+class GeoCalImage(Image):
+    def __init__(self, source_image: LightImage, roi: bool=False) -> None:
+        self.dir = source_image.dir
+        # TODO check subject directory exists
+        self.subject = source_image.subject
+        self.channel = source_image.channel
+        self.img_type = 'geo'
+        self.camera = source_image.camera
+        self.serial = source_image.serial
+        self.width = source_image.width
+        self.height = source_image.height
+        self.cwl = source_image.cwl
+        self.fwhm = source_image.fwhm
+        self.fnumber = source_image.fnumber
+        self.flength = source_image.flength
+        self.exposure = source_image.exposure
+        self.units = source_image.units
+        self.n_imgs = source_image.n_imgs
+        self.img_ave = source_image.img_ave
+        self.img_std = source_image.img_std
+        self.roix = source_image.roix
+        self.roiy = source_image.roiy
+        self.roiw = source_image.roiw
+        self.roih = source_image.roih
+        self.roi = roi
+        self.crows = 9
+        self.ccols = 9
+        self.chkrsize = 5.0E-3
+        self.all_corners = None
+        self.object_points = self.define_calibration_points()
+        self.corner_points = self.find_corners()
+        self.mtx, self.dist, self.rvecs, self.tvecs = None, None, None, None
 
-#     def define_calibration_points(self):
-#         # Define calibration object points and corner locations
-#         objpoints = np.zeros((self.crows*self.ccols, 3), np.float32)
-#         objpoints[:,:2] = np.mgrid[0:self.crows, 0:self.ccols].T.reshape(-1, 2)
-#         objpoints *= self.chkrsize
-#         return objpoints
+    def define_calibration_points(self):
+        # Define calibration object points and corner locations
+        objpoints = np.zeros((self.crows*self.ccols, 3), np.float32)
+        objpoints[:,:2] = np.mgrid[0:self.crows, 0:self.ccols].T.reshape(-1, 2)
+        objpoints *= self.chkrsize
+        return objpoints
 
-#     def find_corners(self):
-#         # Find the chessboard corners
-#         gray = self.img_ave.astype(np.uint8)
-#         if self.roi:
-#             gray = gray[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
-#         ret, corners = cv2.findChessboardCorners(gray, (self.crows,self.ccols))
-#         self.all_corners = ret
+    def find_corners(self):
+        # Find the chessboard corners
+        gray = (self.img_ave/16).astype(np.uint8)
+        if self.roi:
+            gray = gray[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+        ret, corners = cv2.findChessboardCorners(gray, (self.crows,self.ccols), None, cv2.CALIB_CB_ADAPTIVE_THRESH)
+        self.all_corners = ret
 
-#         # refine corner locations
-#         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-#         corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
-#         corners[:,:,0]+=self.roiy
-#         corners[:,:,1]+=self.roix
-#         return corners
+        # refine corner locations
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
+        if self.roi:
+            corners[:,:,0]+=self.roiy
+            corners[:,:,1]+=self.roix
+        return corners
 
-#     def show_corners(self):
-#         # Draw and display the corners
-#         gray = self.img_ave.astype(np.uint8)
-#         img = cv2.drawChessboardCorners(gray, (self.crows,self.ccols), self.corner_points, self.all_corners)
-#         if self.roi:
-#             img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
-#         plt.imshow(img, origin='lower')
-#         plt.show()
+    def show_corners(self, ax: object=None):
+        # Draw and display the corners
+        gray = (self.img_ave/16).astype(np.uint8)
+        img = cv2.drawChessboardCorners(gray, (self.crows,self.ccols), self.corner_points, self.all_corners)
+        if self.roi:
+            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+        ax.imshow(img, origin='lower', cmap='gray')        
+        ax.set_title(f'{self.camera}: {self.cwl} nm')
+        if ax is None:
+            plt.show()
 
-#     def calibrate_camera(self):
-#         # Calibrate the camera
-#         ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera([self.object_points], [self.corner_points], (self.width, self.height), None, None)
-#         self.mtx = mtx
-#         self.dist = dist
-#         self.rvecs = rvecs
-#         self.tvecs = tvecs
-#         return mtx, dist, rvecs, tvecs
+    def calibrate_camera(self):
+        # Calibrate the camera
+        ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera([self.object_points], [self.corner_points], (self.width, self.height), None, None)
+        self.mtx = mtx
+        self.dist = dist
+        self.rvecs = rvecs
+        self.tvecs = tvecs
+        return mtx, dist, rvecs, tvecs
 
 # class AlignedImage(Image):
 #     def __init__(self, source_image: LightImage, source_geocal: GeoCalImage, destination_geocal: GeoCalImage) -> None:
@@ -1401,16 +1404,15 @@ def plot_roi_reflectance(
 
     return results
 
-def load_geometric_calibration(subject: str='geometric_calibration', caption: str=None) -> Dict:
+def load_geometric_calibration(subject: str='geometric_calibration', dark= 'geometric_calibration', caption: str=None) -> Dict:
     """Load the geometric calibration images.
 
     :param subject: directory of target images, defaults to 'geometric_calibration'
     :type subject: str, optional
     :return: Dictionary of geometric correction LightImages
     :rtype: Dict
-    """
-    target = 'geometric_calibration'
-    channels = sorted(list(Path('..', 'data',target).glob('[!._]*')))
+    """    
+    channels = sorted(list(Path('..', 'data',subject).glob('[!._]*')))
     geocs = {}
     fig, ax = grid_plot('Geometric Calibration Target')
     if caption is not None:
@@ -1422,7 +1424,7 @@ def load_geometric_calibration(subject: str='geometric_calibration', caption: st
         geoc.image_load()
         print(f'Loading Geometric Target for: {geoc.camera} ({geoc.cwl} nm)')
         # load the geometric calibration dark frames
-        dark_geoc = DarkImage(target, channel)
+        dark_geoc = DarkImage(dark, channel)
         dark_geoc.image_load()
         # subtract the dark frame
         geoc.dark_subtract(dark_geoc)
@@ -1431,6 +1433,33 @@ def load_geometric_calibration(subject: str='geometric_calibration', caption: st
         geocs[channel] = geoc
     show_grid(fig, ax)
     return geocs
+
+def checkerboard_calibration(geocs: Dict, caption: str=None) -> Dict:
+    """Find the checkerboard corners in the geometric calibration image for each
+    channel.
+
+    :param geocs: Dictionary of calirbation images
+    :type geocs: Dict
+    :param caption: Caption for the gridplot, defaults to None
+    :type caption: str, optional
+    :return: _description_
+    :rtype: Dict
+    """    
+    channels = list(geocs.keys())
+    corners = {}
+    fig, ax = grid_plot('Checkerboard point finding')
+    if caption is not None:
+        grid_caption(caption)
+    for channel in channels:
+        cali_src = geocs[channel]
+        src = GeoCalImage(cali_src, roi=False)
+        print(f'Finding Checkerboard Corners for: {src.camera} ({src.cwl} nm)')
+        # target_points = src.define_calibration_points()
+        # found_points = src.find_corners()
+        src.show_corners(ax=ax[src.camera])
+        corners[channel] = src
+    show_grid(fig, ax)
+    return corners
 
 def calibrate_homography(geocs: Dict, caption: Tuple[str, str]=None) -> Dict:
     """Calibrate the homography matrix for images of the geometric calibration
