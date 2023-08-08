@@ -643,51 +643,6 @@ class CoAlignedImage(Image):
         if ax is None:
             plt.show()
 
-    # def find_homography(self, method: str):
-
-    #     if self.roi:
-    #         query_img = self.roi_image().astype(np.int8)
-    #         train_img = self.destination.roi_image().astype(np.int8)
-    #     else:
-    #         query_img = self.img_ave.astype(np.uint8)
-    #         train_img = self.destination.img_ave.astype(np.uint8)
-
-    #     # Initiate the ORB feature detector
-    #     MAX_FEATURES = 500
-    #     GOOD_MATCH_PERCENT = 0.20
-
-    #     orb = cv2.ORB_create(MAX_FEATURES)
-
-    #     # Find features
-    #     keypoints1, descriptors1 = orb.detectAndCompute(query_img, None)
-    #     keypoints2, descriptors2 = orb.detectAndCompute(train_img, None)
-
-    #     # Find feature matches
-    #     matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
-    #     matches = list(matcher.match(descriptors1, descriptors2, None))
-    #     matches.sort(key=lambda x: x.distance, reverse=False)
-    #     numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
-    #     matches = matches[:numGoodMatches]
-
-    #     # Draw the feature matches
-    #     imMatches = cv2.drawMatches(
-    #                     query_img, keypoints1,
-    #                     train_img, keypoints2,
-    #                     matches, None)
-
-    #     # Get feature coordinates in each image
-    #     points1 = np.zeros((len(matches), 2), dtype=np.float32)
-    #     points2 = np.zeros((len(matches), 2), dtype=np.float32)
-    #     for i, match in enumerate(matches):
-    #         points1[i, :] = keypoints1[match.queryIdx].pt
-    #         points2[i, :] = keypoints2[match.trainIdx].pt
-
-    #     # Find the homography matrix
-    #     homography, _ = cv2.findHomography(points1, points2, cv2.RANSAC)
-
-    #     self.homography = homography
-    #     self.matches = imMatches
-
 class GeoCalImage(Image):
     def __init__(self, source_image: LightImage, roi: bool=False) -> None:
         self.dir = source_image.dir
@@ -737,11 +692,16 @@ class GeoCalImage(Image):
         self.all_corners = ret
 
         # refine corner locations
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-        corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
-        if self.roi:
-            corners[:,:,0]+=self.roiy
-            corners[:,:,1]+=self.roix
+        if self.all_corners:
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
+
+            if self.roi:
+                corners[:,:,0]+=self.roiy
+                corners[:,:,1]+=self.roix
+        else:
+            print(f'No corners found for {self.camera} {self.cwl} nm')
+            corners = None
         return corners
 
     def show_corners(self, ax: object=None):
@@ -763,67 +723,6 @@ class GeoCalImage(Image):
         self.rvecs = rvecs
         self.tvecs = tvecs
         return mtx, dist, rvecs, tvecs
-
-# class AlignedImage(Image):
-#     def __init__(self, source_image: LightImage, source_geocal: GeoCalImage, destination_geocal: GeoCalImage) -> None:
-#         self.dir = source_image.dir
-#         # TODO check subject directory exists
-#         self.subject = source_image.subject
-#         self.channel = source_image.channel
-#         self.img_type = 'geo'
-#         self.camera = source_image.camera
-#         self.serial = source_image.serial
-#         self.width = source_image.width
-#         self.height = source_image.height
-#         self.cwl = source_image.cwl
-#         self.fwhm = source_image.fwhm
-#         self.fnumber = source_image.fnumber
-#         self.flength = source_image.flength
-#         self.exposure = source_image.exposure
-#         self.units = source_image.units
-#         self.n_imgs = source_image.n_imgs
-#         self.img_ave = source_image.img_ave
-#         self.img_std = source_image.img_std
-#         self.source_geocal = source_geocal
-#         self.destination_geocal = destination_geocal
-#         self.source_R, self.source_P, self.dest_R, self.dest_P = None, None, None, None
-
-#     def undistort(self):
-#         # undistort the image
-#         h, w = self.img_ave.shape[:2]
-#         newcameramtx, roi = cv2.getOptimalNewCameraMatrix(self.source_geocal.mtx, self.source_geocal.dist, (w,h), 1, (w,h))
-#         dst = cv2.undistort(self.img_ave, self.source_geocal.mtx, self.source_geocal.dist, None, newcameramtx)
-#         x,y,w,h = roi
-#         dst = dst[y:y+h, x:x+w]
-#         self.img_ave = dst
-#         return dst
-
-#     def stereo_calibrate(self):
-#         # Stereo calibration
-#         flags = 0
-#         flags |= cv2.CALIB_FIX_INTRINSIC
-#         # flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
-#         # flags |= cv2.CALIB_USE_INTRINSIC_GUESS
-#         # flags |= cv2.CALIB_FIX_FOCAL_LENGTH
-#         # flags |= cv2.CALIB_FIX_ASPECT_RATIO
-#         # flags |= cv2.CALIB_ZERO_TANGENT_DIST
-#         # flags |= cv2.CALIB_RATIONAL_MODEL
-#         # flags |= cv2.CALIB_SAME_FOCAL_LENGTH
-#         # flags |= cv2.CALIB_FIX_K3
-#         # flags |= cv2.CALIB_FIX_K4
-#         # flags |= cv2.CALIB_FIX_K5
-#         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-#         ret, mtx1, dist1, mtx2, dist2, R, T, E, F = cv2.stereoCalibrate([self.source_geocal.object_points], [self.source_geocal.corner_points], [self.destination_geocal.corner_points], self.source_geocal.mtx, self.source_geocal.dist, self.destination_geocal.mtx, self.destination_geocal.dist, (self.width, self.height), criteria=criteria, flags=flags)
-#         # compute rectification parameters
-#         R1, R2, P1, P2, _, _, _ = cv2.stereoRectify(self.source_geocal.mtx, self.source_geocal.dist, self.destination_geocal.mtx, self.destination_geocal.dist, (self.width, self.height), R, T, alpha=0)
-#         return R1, P1, R2, P2
-
-#     def coalign(self):
-#         # co-align images
-#         map1, map2 = cv2.initUndistortRectifyMap(self.source_geocal.mtx, self.source_geocal.dist, self.source_R, self.source_P, (self.width, self.height), cv2.CV_16SC2)
-#         gray = self.img_ave.astype(np.uint8)
-#         img_ave = cv2.remap(gray, map1, map2, cv2.INTER_LINEAR)
-#         return img_ave
 
 def grid_plot(title: str=None):
     cam_ax = {}
@@ -1452,8 +1351,8 @@ def checkerboard_calibration(geocs: Dict, caption: str=None) -> Dict:
         grid_caption(caption)
     for channel in channels:
         cali_src = geocs[channel]
+        print(f'Finding Checkerboard Corners for: {cali_src.camera} ({cali_src.cwl} nm)')
         src = GeoCalImage(cali_src, roi=False)
-        print(f'Finding Checkerboard Corners for: {src.camera} ({src.cwl} nm)')
         # target_points = src.define_calibration_points()
         # found_points = src.find_corners()
         src.show_corners(ax=ax[src.camera])
