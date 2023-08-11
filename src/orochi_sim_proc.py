@@ -48,7 +48,7 @@ class Image:
         self.units = ''
         self.n_imgs = None
         self.img_ave = None
-        self.img_std = None
+        self.img_std = None    
 
     def image_load(self, n_imgs: int=None, mode: str='mean') -> None:
         """Load images from the subject directory for the given type,
@@ -160,7 +160,7 @@ class Image:
         default_backend = mpl.get_backend()
         mpl.use('Qt5Agg')  # need this backend for RoiPoly to work
         fig = plt.figure(figsize=(10,10), dpi=80)
-        plt.imshow(img, origin='lower')
+        plt.imshow(img, origin='upper')
         plt.title('Draw ROI')
 
         my_roi = RoiPoly(fig=fig) # draw new ROI in red color
@@ -235,7 +235,7 @@ class Image:
         if threshold:
             img = np.where(img < threshold, np.nan, img)
 
-        ave = ax.imshow(img, origin='lower', vmin=vmin, vmax=vmax)
+        ave = ax.imshow(img, origin='upper', vmin=vmin, vmax=vmax)
         im_ratio = img.shape[0] / img.shape[1]
         cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=label)
 
@@ -494,7 +494,7 @@ class CoAlignedImage(Image):
         self.destination = destination_image
         self.matches = None
         self.match_points = None
-        self.homography = homography
+        self.homography = homography        
 
     def roi_mask(self, show: bool=False) -> np.ndarray:
         """Set an opencv mask using the ROI information
@@ -618,13 +618,13 @@ class CoAlignedImage(Image):
         if overlay:
             img = query_reg-train_img
             col_max = max(np.max(query_reg.astype(float)), np.max(train_img.astype(float)))
-            src = ax.imshow(img, cmap='RdBu', origin='lower', vmin=-col_max, vmax=col_max)
+            src = ax.imshow(img, cmap='RdBu', origin='upper', vmin=-col_max, vmax=col_max)
             im_ratio = query_reg.shape[0] / query_reg.shape[1]
             label = 'Source - Destination'
             cbar = plt.colorbar(src, ax=ax, fraction=0.047*im_ratio, label=label)
         elif error:
             img = np.abs(query_reg-train_img)/train_img
-            err = ax.imshow(img, origin='lower')
+            err = ax.imshow(img, origin='upper')
             im_ratio = query_reg.shape[0] / query_reg.shape[1]
             label = 'Err. % (|S. - D.|/D.)'
             cbar = plt.colorbar(err, ax=ax, fraction=0.047*im_ratio, label=label)
@@ -668,13 +668,15 @@ class GeoCalImage(Image):
         self.roiw = source_image.roiw
         self.roih = source_image.roih
         self.roi = roi
+        self.polyroi = source_image.polyroi
         self.crows = 9
         self.ccols = 9
         self.chkrsize = 5.0E-3
         self.all_corners = None
         self.object_points = self.define_calibration_points()
         self.corner_points = self.find_corners()
-        self.mtx, self.dist, self.rvecs, self.tvecs = None, None, None, None
+        self.mtx, self.dist, self.rvec, self.tvec = None, None, None, None
+        self.f_length = None
 
     def define_calibration_points(self):
         # Define calibration object points and corner locations
@@ -685,7 +687,7 @@ class GeoCalImage(Image):
 
     def find_corners(self):
         # Find the chessboard corners
-        gray = (self.img_ave/16).astype(np.uint8)
+        gray = (self.img_ave/16).round().astype(np.uint8)
         if self.roi:
             gray = gray[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
         ret, corners = cv2.findChessboardCorners(gray, (self.crows,self.ccols), None, cv2.CALIB_CB_ADAPTIVE_THRESH)
@@ -694,7 +696,7 @@ class GeoCalImage(Image):
         # refine corner locations
         if self.all_corners:
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-            corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
+            corners = cv2.cornerSubPix(gray, corners, (5,5), (-1,-1), criteria)
 
             if self.roi:
                 corners[:,:,0]+=self.roiy
@@ -704,16 +706,71 @@ class GeoCalImage(Image):
             corners = None
         return corners
 
-    def show_corners(self, ax: object=None):
+    def show_corners(self, ax: object=None, corner_roi: bool=False):
         # Draw and display the corners
         gray = (self.img_ave/16).astype(np.uint8)
-        img = cv2.drawChessboardCorners(gray, (self.crows,self.ccols), self.corner_points, self.all_corners)
+        rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        img = cv2.drawChessboardCorners(rgb, (self.crows,self.ccols), self.corner_points, self.all_corners)
         if self.roi:
             img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
-        ax.imshow(img, origin='lower', cmap='gray')        
+        elif corner_roi and self.all_corners:
+            # find the roi that bounds the corners
+            self.roix = int(np.min(self.corner_points[:,:,1]))
+            self.roiy = int(np.min(self.corner_points[:,:,0]))
+            self.roiw = int(np.max(self.corner_points[:,:,1])-self.roix)
+            self.roih = int(np.max(self.corner_points[:,:,0])-self.roiy)
+            pad = int(0.1*self.roiw)
+            self.roix-=pad
+            self.roiy-=pad
+            self.roiw+=2*pad
+            self.roih+=2*pad
+            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+        ax.imshow(img, origin='upper', cmap='gray')        
         ax.set_title(f'{self.camera}: {self.cwl} nm')
         if ax is None:
             plt.show()
+
+    def project_axes(self, ax: object=None, corner_roi: bool=False):
+        # Draw and display an axis on the checkerboard
+        # project a 3D axis onto the image
+        axis = np.float32([[1,0,0], [0,1,0], [0,0,-1]]).reshape(-1,3)
+        axis *= self.chkrsize * 5 # default to 5 square axes
+        imgpts, jac = cv2.projectPoints(axis, self.rvec, self.tvec, self.mtx, self.dist)       
+        # draw the axis on the image
+        img = (self.img_ave/16).round().astype(np.uint8)
+        img = cv2.cvtColor(img,cv2.COLOR_GRAY2RGB)
+        corner = tuple(self.corner_points[0].ravel().astype(np.uint16))
+        img = cv2.line(img, corner, tuple((imgpts[0].ravel()).astype(np.int64)), (255,0,0), 5)
+        img = cv2.line(img, corner, tuple((imgpts[1].ravel()).astype(np.int64)), (0,255,0), 5)
+        img = cv2.line(img, corner, tuple((imgpts[2].ravel()).astype(np.int64)), (0,0,255), 5)
+
+        if self.roi:
+            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+        elif corner_roi and self.all_corners:
+            # find the roi that bounds the corners
+            self.roix = int(np.min(self.corner_points[:,:,1]))
+            self.roiy = int(np.min(self.corner_points[:,:,0]))
+            self.roiw = int(np.max(self.corner_points[:,:,1])-self.roix)
+            self.roih = int(np.max(self.corner_points[:,:,0])-self.roiy)
+            pad = int(0.1*self.roiw)
+            self.roix-=pad
+            self.roiy-=pad
+            self.roiw+=2*pad
+            self.roih+=2*pad
+            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+
+        ax.imshow(img, origin='upper')        
+        ax.set_title(f'{self.camera}: {self.cwl} nm')
+        if ax is None:
+            plt.show()
+
+    def camera__intrinsic_properties(self) -> None:
+        """Get camera properties from the camera intinsic matrix
+        """        
+        fovx, fovy, f_length, principal_point, aspect_ratio = cv2.calibrationMatrixValues(self.mtx, self.img_ave.shape, self.img_ave.shape[0]*5.86E-3, self.img_ave.shape[1]*5.86E-3)
+        # to do put these in the object properties
+        self.f_length = f_length
+        return fovx, fovy, f_length, principal_point, aspect_ratio
 
     def calibrate_camera(self):
         # Calibrate the camera
@@ -723,6 +780,208 @@ class GeoCalImage(Image):
         self.rvecs = rvecs
         self.tvecs = tvecs
         return mtx, dist, rvecs, tvecs
+
+class StereoPair():
+    def __init__(self, source_image: LightImage, destination_image: LightImage) -> None:
+        self.src = source_image
+        self.dst = destination_image
+        self.src_pts = None
+        self.src_pt_dsc = None
+        self.dst_pts = None
+        self.dst_pt_dsc = None
+        self.matches = None
+        self.f_mtx = None
+        self.e_mtx = None
+        self.src_elines = None
+        self.dst_elines = None
+
+    def find_matches(self, use_corners: bool=False) -> int:
+        """Find matching points in the source and destination images
+
+        :param use_corners: Use the corner points to find matches, defaults to False
+        :type use_corners: bool, optional
+        :return: Number of matching points
+        :rtype: int
+        """     
+        # find points and descriptors
+        if use_corners:
+            # use the corner points already found in the source and destination images during geometric calibration...
+            # but then, what are the descriptors for these points?
+            self.src_pts = self.src.corner_points
+            self.dst_pts = self.dst.corner_points
+            # self.src_pt_dsc = ???
+            # self.dst_pt_dsc = ???
+        else: # otherwise, perform new feature searches            
+            self.src_pts, self.src_pt_dsc = self.find_features('source')
+            self.dst_pts, self.dst_pt_dsc = self.find_features('destination')
+        # find matches
+        matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
+        GOOD_MATCH_PERCENT = 0.10
+        matches = list(matcher.match(self.src_pt_dsc, self.dst_pt_dsc, None))
+        matches.sort(key=lambda x: x.distance, reverse=False)
+        numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
+        matches = matches[:numGoodMatches]    
+        self.matches = matches
+        return len(matches)    
+
+    def find_features(self, view: str) -> tuple:
+        """Find feature points and descriptors in the source or destination image
+
+        :param view: 'source' or 'destination' iamge to perform search over
+        :type view: str
+        :return: feature points and descriptors
+        :rtype: tuple
+        """        
+        if view == 'source':
+            img = self.src.img_ave
+        elif view == 'destination':
+            img = self.dst.img_ave
+        else:
+            raise ValueError('View must be "source" or "destination"')
+                
+        img = (img.round()/16).astype(np.uint8) # convert image to 8-bit
+        MAX_FEATURES = 500
+        orb = cv2.ORB_create(MAX_FEATURES)
+        points, descriptors = orb.detectAndCompute(img, None) # TODO allow for an actual mask to be applied, rather than just None
+        return points, descriptors
+
+    def draw_matches(self, ax: object=None) -> None:
+        """Draw the matching points in the source and destination images
+        """       
+        src_img = (self.src.img_ave.round()/16).astype(np.uint8)
+        dst_img = (self.dst.img_ave.round()/16).astype(np.uint8)
+        img = cv2.drawMatches(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
+        if ax is None:
+            plt.imshow(img, origin='upper')            
+            plt.show()
+        else:
+            ax.imshow(img, origin='upper')
+            ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
+
+    def calibrate_stereo(self):
+        """Calibrate the given stereo pair of cameras
+        """        
+        obj_pts = self.src.object_points
+        self.src_pts = self.src.corner_points
+        self.dst_pts = self.dst.corner_points       
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001) 
+        ret, CM1, dist1, CM2, dist2, R, T, E, F = cv2.stereoCalibrate(
+            [obj_pts], 
+            [self.src_pts], [self.dst_pts], 
+            self.src.mtx, self.src.dist,
+            self.dst.mtx, self.dst.dist, 
+            (self.src.width, self.src.height), 
+            criteria = criteria, 
+            flags = cv2.CALIB_FIX_INTRINSIC)
+        self.e_mtx = E
+        self.f_mtx = F
+        return ret, CM1, dist1, CM2, dist2, R, T, E, F
+
+    def find_fundamental_mtx(self, use_corners: bool=False) -> np.ndarray:
+        """Find the fundamental matrix between the source and destination
+        cameras
+
+        :return: Fundamental matrix
+        :rtype: np.ndarray
+        """        
+
+        # find points and descriptors
+        if use_corners:
+            # use the corner points already found in the source and destination images during geometric calibration...
+            # but then, what are the descriptors for these points?
+            self.src_pts = self.src.corner_points
+            self.dst_pts = self.dst.corner_points
+            # self.src_pt_dsc = ???
+            # self.dst_pt_dsc = ???
+        else: # otherwise, perform new feature searches            
+            self.src_pts, self.src_pt_dsc = self.find_features('source')
+            self.dst_pts, self.dst_pt_dsc = self.find_features('destination')        
+        F, mask = cv2.findFundamentalMat(self.src_pts,self.dst_pts,cv2.FM_LMEDS)
+        self.f_mtx = F
+        # update the matches to only include those that are inliers
+        self.src_pts = self.src_pts[mask.ravel()==1]
+        self.dst_pts = self.dst_pts[mask.ravel()==1]
+        return F
+    
+    def find_essential_mtx(self) -> np.ndarray:
+            """Find the essential matrix between the source and destination
+            cameras
+
+            :return: Essential matrix
+            :rtype: np.ndarray
+            """                
+            self.src_pts = self.src.corner_points
+            self.dst_pts = self.dst.corner_points
+       
+            E, mask = cv2.findEssentialMat(
+                self.src_pts,
+                self.dst_pts,
+                self.src.mtx,
+                self.src.dist,
+                self.dst.mtx,
+                self.dst.dist              
+                )
+            self.e_mtx = E
+            # update the matches to only include those that are inliers
+            self.src_pts = self.src_pts[mask.ravel()==1]
+            self.dst_pts = self.dst_pts[mask.ravel()==1]
+            return E
+
+    def compute_epilines(self, matrix_type: str='F') -> None:
+        """Compute epilines for each camera in each corresponding image
+        """        
+        # self.src_elines = np.matmul(self.e_mtx.T, self.dst_pts.reshape(-1,1,2)).reshape(-1,3)
+        # self.dst_elines = np.matmul(self.e_mtx.T, self.src_pts.reshape(-1,1,2)).reshape(-1,3)
+        if matrix_type == 'F':
+            mtx = self.f_mtx
+        elif matrix_type == 'E':
+            mtx = self.e_mtx
+        else:
+            raise ValueError('Matrix type must be "F" or "E"')
+        
+        # self.src_elines = cv2.computeCorrespondEpilines(self.dst_pts.reshape(-1,1,2),2,mtx.T).reshape(-1,3)
+        # self.dst_elines = cv2.computeCorrespondEpilines(self.src_pts.reshape(-1,1,2),1,mtx.T).reshape(-1,3)
+
+        self.dst_elines = cv2.computeCorrespondEpilines(self.src_pts.reshape(-1,1,2),2,mtx.T).reshape(-1,3)
+        self.src_elines = cv2.computeCorrespondEpilines(self.dst_pts.reshape(-1,1,2),1,mtx.T).reshape(-1,3)
+        return self.src_elines, self.dst_elines
+
+    def draw_epilines(self, ax: object=None) -> None:
+        """Draw epilines in the destination image
+        """        
+        r,c = self.dst.img_ave.shape
+        img = (self.dst.img_ave.round()/16).astype(np.uint8)
+        img = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
+        pts = self.dst_pts
+        lines = self.dst_elines
+        for r,pt in zip(lines,pts):
+            color = tuple(np.random.randint(0,255,3).tolist())
+            x0,y0 = map(int, [0, -r[2]/r[1] ])
+            x1,y1 = map(int, [c, -(r[2]+r[0]*c)/r[1] ])
+            img = cv2.line(img, (x0,y0), (x1,y1), color,1)
+            img = cv2.circle(img,tuple(pt.flatten().astype(int)),5,color,-1)
+        if ax is None:
+            plt.imshow(img, origin='upper')            
+            plt.show()
+        else:
+            ax.imshow(img, origin='upper')
+            ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
+
+    def find_homography(self) -> np.ndarray:
+        """Find the homography between the source and destination cameras
+
+        :return: Homography matrix
+        :rtype: np.ndarray
+        """        
+        pass
+
+    def compute_depth(self) -> None:
+        """Compute the depth of each pixel in the source and destination images
+        """        
+        pass
+
+    
+
 
 def grid_plot(title: str=None):
     cam_ax = {}
@@ -738,7 +997,7 @@ def grid_plot(title: str=None):
     cam_ax[3] = ax[2][1] # 550
     cam_ax[1] = ax[2][2] # 475
     # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
-    # fig.suptitle(title)
+    fig.suptitle(title)
     return fig, cam_ax
 
 def show_grid(fig, ax):
@@ -1355,7 +1614,7 @@ def checkerboard_calibration(geocs: Dict, caption: str=None) -> Dict:
         src = GeoCalImage(cali_src, roi=False)
         # target_points = src.define_calibration_points()
         # found_points = src.find_corners()
-        src.show_corners(ax=ax[src.camera])
+        src.show_corners(ax=ax[src.camera], corner_roi=True)
         corners[channel] = src
     show_grid(fig, ax)
     return corners
