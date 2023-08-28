@@ -7,3 +7,5 @@ test.jpg
 notebooks/calibrationtest
 data
 *.py[cod]
+notebooks/stereo_calibration_processing_17072023_outputs/
+notebooks/stereo_calibration_processing_22082023_outputs/
