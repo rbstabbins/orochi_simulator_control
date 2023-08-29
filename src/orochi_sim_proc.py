@@ -6,8 +6,11 @@ Rikkyo University
 """
 from pathlib import Path
 import os
+from collections import OrderedDict
 import cv2
+import dict2xml
 import matplotlib.pyplot as plt
+from matplotlib import colors
 import matplotlib as mpl
 import numpy as np
 import pandas as pd
@@ -644,7 +647,7 @@ class CoAlignedImage(Image):
             plt.show()
 
 class GeoCalImage(Image):
-    def __init__(self, source_image: LightImage, roi: bool=False) -> None:
+    def __init__(self, source_image: LightImage, chkrbrd: Tuple, roi: bool=False) -> None:
         self.dir = source_image.dir
         # TODO check subject directory exists
         self.subject = source_image.subject
@@ -669,14 +672,65 @@ class GeoCalImage(Image):
         self.roih = source_image.roih
         self.roi = roi
         self.polyroi = source_image.polyroi
-        self.crows = 9
-        self.ccols = 9
-        self.chkrsize = 5.0E-3
+        self.crows = chkrbrd[0]
+        self.ccols = chkrbrd[1]
+        self.chkrsize = chkrbrd[2]
         self.all_corners = None
         self.object_points = self.define_calibration_points()
         self.corner_points = self.find_corners()
         self.mtx, self.dist, self.rvec, self.tvec = None, None, None, None
+        self.p_mtx = None
+        self.calibration_error = None
         self.f_length = None
+
+    def export_calibration(self, dir: str):
+        """Print the calibration parameters and channel information to xml
+        """        
+        # put object properties into a dataframe        
+        camera_properties = OrderedDict([
+            ('Subject', self.subject),
+            ('Channel', self.channel),
+            ('Camera #', self.camera),
+            ('Serial #', self.serial),
+            ('Centre-Wavelength (nm)', self.cwl),
+            ('FWHM (nm)', self.fwhm),
+            ('F-Number', self.fnumber),
+            ('Lens Focal Length (mm)', self.flength*1e3),
+            ('Exposure Time (s)', self.exposure),
+            ('Image Width (px)', self.width),
+            ('Image Height (px)', self.height)            
+        ])
+        checkerboard_properties = OrderedDict([
+            ('Checkerboard Rows', self.crows),
+            ('Checkerboard Columns', self.ccols),
+            ('Checkerboard Square Size (mm)', self.chkrsize*1e3)
+        ])
+        if self.rvec is not None:
+            r_mtx, jac = cv2.Rodrigues(self.rvec)
+        else:
+            r_mtx = None
+        camera_calibration = OrderedDict([
+            ('Intrinsic Matrix', self.mtx),
+            ('Rotation Matrix', r_mtx),
+            ('Translation Vector', self.tvec),
+            ('Projection Matrix', self.p_mtx),
+            ('Distortion Coefficients', self.dist),
+            ('Calibrated Focal Length (mm)', self.f_length),   
+            ('Calibration Error', self.calibration_error)         
+        ])
+        channel_properties = OrderedDict([
+            ('Camera', camera_properties),
+            ('Checkerboard', checkerboard_properties),
+            ('Calibration', camera_calibration)
+        ])
+        # write to xml
+        # xml = dict2xml(channel_properties, indent="   ", iterables_repeat_wrap=True)
+        xml = dict2xml.Converter(indent="    ").build(channel_properties, iterables_repeat_wrap=False)
+        # save the xml file
+        filename = str(Path(dir, f'{self.subject}_{self.channel}.xml'))
+        with open(filename, "w") as f:
+            f.write(xml)
+        return xml
 
     def define_calibration_points(self):
         # Define calibration object points and corner locations
@@ -690,7 +744,7 @@ class GeoCalImage(Image):
         gray = (self.img_ave/16).round().astype(np.uint8)
         if self.roi:
             gray = gray[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
-        ret, corners = cv2.findChessboardCorners(gray, (self.crows,self.ccols), None, cv2.CALIB_CB_ADAPTIVE_THRESH)
+        ret, corners = cv2.findChessboardCorners(gray, (self.crows,self.ccols), flags=None)
         self.all_corners = ret
 
         # refine corner locations
@@ -719,12 +773,12 @@ class GeoCalImage(Image):
             self.roiy = int(np.min(self.corner_points[:,:,0]))
             self.roiw = int(np.max(self.corner_points[:,:,1])-self.roix)
             self.roih = int(np.max(self.corner_points[:,:,0])-self.roiy)
-            pad = int(0.1*self.roiw)
-            self.roix-=pad
-            self.roiy-=pad
-            self.roiw+=2*pad
-            self.roih+=2*pad
-            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+            pad = int(0.3*self.roiw)
+            self.roix = np.clip(self.roix-pad, 0, self.width)
+            self.roiy = np.clip(self.roiy-pad, 0, self.height)            
+            self.roiw = np.clip(self.roiw, 0, self.width-self.roix-2*pad)+2*pad
+            self.roih = np.clip(self.roih, 0, self.height-self.roiy-2*pad)+2*pad
+            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]                
         ax.imshow(img, origin='upper', cmap='gray')        
         ax.set_title(f'{self.camera}: {self.cwl} nm')
         if ax is None:
@@ -735,14 +789,15 @@ class GeoCalImage(Image):
         # project a 3D axis onto the image
         axis = np.float32([[1,0,0], [0,1,0], [0,0,-1]]).reshape(-1,3)
         axis *= self.chkrsize * 5 # default to 5 square axes
-        imgpts, jac = cv2.projectPoints(axis, self.rvec, self.tvec, self.mtx, self.dist)       
-        # draw the axis on the image
         img = (self.img_ave/16).round().astype(np.uint8)
         img = cv2.cvtColor(img,cv2.COLOR_GRAY2RGB)
-        corner = tuple(self.corner_points[0].ravel().astype(np.uint16))
-        img = cv2.line(img, corner, tuple((imgpts[0].ravel()).astype(np.int64)), (255,0,0), 5)
-        img = cv2.line(img, corner, tuple((imgpts[1].ravel()).astype(np.int64)), (0,255,0), 5)
-        img = cv2.line(img, corner, tuple((imgpts[2].ravel()).astype(np.int64)), (0,0,255), 5)
+        if self.rvec is not None:
+            imgpts, jac = cv2.projectPoints(axis, self.rvec, self.tvec, self.mtx, self.dist)       
+            # draw the axis on the image
+            corner = tuple(self.corner_points[0].ravel().astype(np.uint16))
+            img = cv2.line(img, corner, tuple((imgpts[0].ravel()).astype(np.int64)), (255,0,0), 3)
+            img = cv2.line(img, corner, tuple((imgpts[1].ravel()).astype(np.int64)), (0,255,0), 3)
+            img = cv2.line(img, corner, tuple((imgpts[2].ravel()).astype(np.int64)), (0,0,255), 3)
 
         if self.roi:
             img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
@@ -753,10 +808,10 @@ class GeoCalImage(Image):
             self.roiw = int(np.max(self.corner_points[:,:,1])-self.roix)
             self.roih = int(np.max(self.corner_points[:,:,0])-self.roiy)
             pad = int(0.1*self.roiw)
-            self.roix-=pad
-            self.roiy-=pad
-            self.roiw+=2*pad
-            self.roih+=2*pad
+            self.roix = np.clip(self.roix-pad, 0, self.width)
+            self.roiy = np.clip(self.roiy-pad, 0, self.height)            
+            self.roiw = np.clip(self.roiw, 0, self.width-self.roix-2*pad)+2*pad
+            self.roih = np.clip(self.roih, 0, self.height-self.roiy-2*pad)+2*pad
             img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
 
         ax.imshow(img, origin='upper')        
@@ -764,13 +819,28 @@ class GeoCalImage(Image):
         if ax is None:
             plt.show()
 
-    def camera__intrinsic_properties(self) -> None:
+    def camera_intrinsic_properties(self) -> None:
         """Get camera properties from the camera intinsic matrix
         """        
         fovx, fovy, f_length, principal_point, aspect_ratio = cv2.calibrationMatrixValues(self.mtx, self.img_ave.shape, self.img_ave.shape[0]*5.86E-3, self.img_ave.shape[1]*5.86E-3)
         # to do put these in the object properties
         self.f_length = f_length
         return fovx, fovy, f_length, principal_point, aspect_ratio
+    
+    def check_distortion(self, ax: object=None):
+        """Apply the calibrated distortion coefficients to the image for
+        verification.
+
+        :param ax: _description_, defaults to None
+        :type a
+        """
+        undist_img = cv2.undistort(self.img_ave, self.mtx, self.dist)        
+        dif_img = (self.img_ave - undist_img)
+        if self.roi:
+            undist_img = undist_img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+            dif_img = dif_img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+        ax.imshow(dif_img, origin='upper', cmap='RdBu')        
+        ax.set_title(f'{self.camera}: {self.cwl} nm')
 
     def calibrate_camera(self):
         # Calibrate the camera
@@ -789,11 +859,338 @@ class StereoPair():
         self.src_pt_dsc = None
         self.dst_pts = None
         self.dst_pt_dsc = None
+        self.obj_pts = None
         self.matches = None
         self.f_mtx = None
         self.e_mtx = None
+        self.r_mtx = None
+        self.t_mtx = None
+        self.stereo_err = None
+        self.v_alignment = None
+        self.src_r = None
+        self.dst_r = None
+        self.src_p = None
+        self.dst_p = None
+        self.q_mtx = None
         self.src_elines = None
         self.dst_elines = None
+        self.stereoMatcher = None
+        self.points3D = None
+
+    def export_calibration(self, dir: str):
+        """Export the stereo calibration properties to xml        
+
+        :param dir: _description_
+        :type dir: str
+        """ 
+        # source camera properties
+        camera_A_properties = OrderedDict([
+            ('Subject', self.src.subject),
+            ('Channel', self.src.channel),
+            ('Camera #', self.src.camera),
+            ('Serial #', self.src.serial),
+            ('Centre-Wavelength (nm)', self.src.cwl),
+            ('FWHM (nm)', self.src.fwhm),
+            ('F-Number', self.src.fnumber),
+            ('Lens Focal Length (mm)', self.src.flength*1e3),
+            ('Exposure Time (s)', self.src.exposure),
+            ('Image Width (px)', self.src.width),
+            ('Image Height (px)', self.src.height)            
+        ])
+        camera_B_properties = OrderedDict([
+            ('Subject', self.dst.subject),
+            ('Channel', self.dst.channel),
+            ('Camera #', self.dst.camera),
+            ('Serial #', self.dst.serial),
+            ('Centre-Wavelength (nm)', self.dst.cwl),
+            ('FWHM (nm)', self.dst.fwhm),
+            ('F-Number', self.dst.fnumber),
+            ('Lens Focal Length (mm)', self.dst.flength*1e3),
+            ('Exposure Time (s)', self.dst.exposure),
+            ('Image Width (px)', self.dst.width),
+            ('Image Height (px)', self.dst.height)
+        ])
+        # stereo properties
+        stereo_properties = OrderedDict([
+            ('Fundamental Matrix', self.f_mtx),
+            ('Essential Matrix', self.e_mtx),
+            ('Rotation Matrix', self.r_mtx),
+            ('Translation Vector', self.t_mtx),
+            ('Stereo Calibration Error', self.stereo_err),
+            ('Rectification Matrix', self.q_mtx)
+        ])
+        channel_properties = OrderedDict([
+            ('Camera A', camera_A_properties),
+            ('Camera B', camera_B_properties),
+            ('Stereo Calibration', stereo_properties)
+        ])
+        # write to xml       
+        # xml = dict2xml(channel_properties, indent="   ", iterables_repeat_wrap=True)
+        xml = dict2xml.Converter(indent="    ").build(channel_properties, iterables_repeat_wrap=False)
+        # save the xml file
+        filename = str(Path(dir, f'A{self.src.channel}_B{self.dst.channel}.xml'))
+        with open(filename, "w") as f:
+            f.write(xml)
+        return xml
+
+    def calibrate_stereo(self):
+        """Calibrate the given stereo pair of cameras
+        """        
+        if self.obj_pts == None:
+            self.obj_pts = [self.src.object_points]
+        if self.src_pts == None:
+            self.src_pts = [self.src.corner_points]
+        if self.dst_pts == None:
+            self.dst_pts = [self.dst.corner_points]
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001) 
+        try:
+            ret, CM1, dist1, CM2, dist2, R, T, E, F = cv2.stereoCalibrate(
+                self.obj_pts, 
+                self.src_pts, self.dst_pts, 
+                self.src.mtx, self.src.dist,
+                self.dst.mtx, self.dst.dist, 
+                (self.src.width, self.src.height), 
+                criteria = criteria, 
+                flags = cv2.CALIB_FIX_INTRINSIC)
+        except:
+            print('stop')
+        self.r_mtx = R
+        self.t_mtx = T
+        self.e_mtx = E
+        self.f_mtx = F   
+        self.stereo_err = ret
+
+        # check R and T against src and dst t_vecs+r_vecs
+        src_r, _ = cv2.Rodrigues(self.src.rvec)
+        dst_r, _ = cv2.Rodrigues(self.dst.rvec)
+        src_t = self.src.tvec
+        dst_t = self.dst.tvec
+        r_diff = dst_r - np.matmul(R,src_r)
+        t_diff = dst_t - (np.matmul(R,src_t)+T)
+        print(f'Rotation Difference: {np.sqrt(np.sum(r_diff**2))}')
+        print(f'Translation Difference: {np.sqrt(np.sum(t_diff**2))}')
+
+        return ret     
+
+    def compute3D(self):
+        """Compute 3D point locations
+        """        
+        points4D = cv2.triangulatePoints(self.src.p_mtx, self.dst.p_mtx, self.src.corner_points, self.dst.corner_points)
+        points3D = cv2.convertPointsFromHomogeneous(points4D.T)        
+        self.points3D = points3D.squeeze()
+        return points3D
+
+    def plot_3D_points(self, ax: object=None):
+        x_pts = self.points3D[:,0]
+        y_pts = self.points3D[:,1]
+        z_pts = self.points3D[:,2]
+        if ax is None:
+            fig = plt.figure()
+            ax = plt.axes(projection='3d')
+        color = channel_cols(self.dst.camera) # tuple(np.random.randint(0,255,3).tolist())
+        ax.scatter3D(x_pts, y_pts, z_pts, color=color)
+        # ax.set_xlim(-self.src.chkrsize*self.src.ccols, +self.src.chkrsize*self.src.ccols)
+        # ax.set_ylim(-self.src.chkrsize*self.src.ccols, +self.src.chkrsize*self.src.ccols)
+        # ax.set_zlim(-self.src.chkrsize*self.src.ccols, +self.src.chkrsize*self.src.ccols)
+        title = f'{self.dst.camera}: {self.dst.cwl} nm'
+        ax.set_title(title)
+        # TODO show the plot if the ax was none
+
+    def compute_epilines(self, matrix_type: str='F') -> None:
+        """Compute epilines for each camera in each corresponding image
+        """        
+        # self.src_elines = np.matmul(self.e_mtx.T, self.dst_pts.reshape(-1,1,2)).reshape(-1,3)
+        # self.dst_elines = np.matmul(self.e_mtx.T, self.src_pts.reshape(-1,1,2)).reshape(-1,3)
+        if matrix_type == 'F':
+            mtx = self.f_mtx
+        elif matrix_type == 'E':
+            mtx = self.e_mtx
+        else:
+            raise ValueError('Matrix type must be "F" or "E"')
+        
+        # self.src_elines = cv2.computeCorrespondEpilines(self.dst_pts.reshape(-1,1,2),2,mtx.T).reshape(-1,3)
+        # self.dst_elines = cv2.computeCorrespondEpilines(self.src_pts.reshape(-1,1,2),1,mtx.T).reshape(-1,3)
+
+        self.src_pts = self.src.corner_points
+        self.dst_pts = self.dst.corner_points
+
+        self.src_elines = cv2.computeCorrespondEpilines(self.dst_pts.reshape(-1,1,2),1,mtx.T).reshape(-1,3)
+        self.dst_elines = cv2.computeCorrespondEpilines(self.src_pts.reshape(-1,1,2),2,mtx.T).reshape(-1,3)
+        return self.src_elines, self.dst_elines
+
+    def draw_epilines(self, view: str='dst', ax: object=None) -> None:
+        """Draw epilines in the destination image
+        """        
+        if view == 'dst':
+            r,c = self.dst.img_ave.shape
+            img = (self.dst.img_ave.round()/16).astype(np.uint8)
+            img = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
+            pts = self.dst_pts
+            lines = self.dst_elines
+            title = f'{self.dst.camera}: {self.dst.cwl} nm'
+        elif view == 'src':
+            r,c = self.src.img_ave.shape
+            if ax.title.get_text() == '':
+                img = (self.src.img_ave.round()/16).astype(np.uint8)
+                img = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
+            else:
+                img = ax.get_images()[0]._A
+            pts = self.src_pts
+            lines = self.src_elines
+            title = f'{self.src.camera}: {self.src.cwl} nm'
+
+        for r,pt in zip(lines,pts):
+            color = channel_cols(self.dst.camera, rgb=True) # tuple(np.random.randint(0,255,3).tolist())
+            x0,y0 = map(int, [0, -r[2]/r[1] ])
+            x1,y1 = map(int, [c, -(r[2]+r[0]*c)/r[1] ])
+            img = cv2.line(img, (x0,y0), (x1,y1), color,1)
+            img = cv2.circle(img,tuple(pt.flatten().astype(int)),5,color,-1)            
+        
+        if ax is None:
+            fig, ax = plt.subplots()
+            ax.imshow(img, origin='upper')
+            ax.set_title(title)
+            fig.show()
+        else:
+            ax.imshow(img, origin='upper')
+            ax.set_title(title)
+
+    def rectify(self,ax: object=None) -> None:
+        """Rectify the source and destination images
+        """        
+        R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
+                self.src.mtx, self.src.dist,
+                self.dst.mtx, self.dst.dist,
+                (self.src.height, self.src.width),
+                self.r_mtx, self.t_mtx, alpha=-1, newImageSize=(0,0))
+        self.src_r = R1
+        self.dst_r = R2
+        self.src_p = P1
+        self.dst_p = P2
+        self.q_mtx = Q
+
+        self.v_alignment = self.dst_p[0,3] == 0.0            
+        
+        self.src_map1, self.src_map2 = cv2.initUndistortRectifyMap(
+            self.src.mtx, self.src.dist, self.src_r, self.src_p, 
+            (self.src.height, self.src.width), cv2.CV_32FC1)
+        
+        self.dst_map1, self.dst_map2 = cv2.initUndistortRectifyMap(
+            self.dst.mtx, self.dst.dist, self.dst_r, self.dst_p, 
+            (self.dst.height, self.dst.width), cv2.CV_32FC1)
+        
+        src_img = (self.src.img_ave.round()/16).astype(np.uint8)
+        src_img = cv2.cvtColor(src_img,cv2.COLOR_GRAY2BGR)
+        dst_img = (self.dst.img_ave.round()/16).astype(np.uint8)
+        dst_img = cv2.cvtColor(dst_img,cv2.COLOR_GRAY2BGR)        
+
+        src_img = cv2.remap(src_img, self.src_map1, self.src_map2, cv2.INTER_LINEAR)
+        dst_img = cv2.remap(dst_img, self.dst_map1, self.dst_map2, cv2.INTER_LINEAR)
+        
+        if self.v_alignment:
+            src_img = cv2.rotate(src_img, cv2.ROTATE_90_CLOCKWISE)
+            dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_CLOCKWISE)        
+            
+        self.src_rect = src_img
+        self.dst_rect = dst_img
+
+        # src_img = cv2.rectangle(self.src_rect, (roi1[0],roi1[1]), (roi1[0]+roi1[2],roi1[1]+roi1[3]), (0,0,255), 2)
+        # dst_img = cv2.rectangle(self.dst_rect, (roi2[0],roi2[1]), (roi2[0]+roi2[2],roi2[1]+roi2[3]), (0,0,255), 2)
+
+        title = f'{self.dst.camera}: {self.dst.cwl} nm'
+
+        fig2, ax2 = plt.subplots(1,2)
+
+        ax2[0].imshow(dst_img, origin='upper')  
+        ax2[1].imshow(src_img, origin='upper')
+        ax2[0].set_title(self.dst.channel)
+        ax2[1].set_title(self.src.channel+' Stereo Err.: '+str(self.stereo_err))
+
+        h_lines = np.arange(0, self.src_rect.shape[0], self.src_rect.shape[0]/40) 
+        for h_line in h_lines:
+            ax2[0].axhline(y = h_line, color = 'r', linestyle = '-', lw=0.4)      
+            ax2[1].axhline(y = h_line, color = 'r', linestyle = '-', lw=0.4)      
+        fig2.show()
+
+        if self.dst_elines is not None:
+            self.draw_epilines('dst')
+
+        if self.src.camera == self.dst.camera:
+            ax.imshow(src_img, origin='upper')    
+            ax.set_title(title)
+        else:
+            ax.imshow(dst_img, origin='upper')    
+            ax.set_title(title)
+
+    def compute_disparity(self, ax: object=None) -> None:
+        """Compute a disparity map for the given image pair.
+        """        
+        matcher = cv2.StereoBM_create(numDisparities=16, blockSize=15)
+        self.stereoMatcher = matcher      
+
+        src_img = cv2.cvtColor(self.src_rect,cv2.COLOR_BGR2GRAY)
+        dst_img = cv2.cvtColor(self.dst_rect,cv2.COLOR_BGR2GRAY)  
+
+        self.disparity = matcher.compute(src_img, dst_img)
+        if ax is not None:
+            ax.imshow(self.disparity, origin='upper', cmap='gray')
+            ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
+
+    def depth_from_disparity(self, ax: object=None) -> None:
+        """Compute the 3D point cloud from the disparity map, Q matrix and 
+        rectified projection matrices.
+        """
+        self.points3D = cv2.reprojectImageTo3D(self.disparity, self.q_mtx)        
+            
+    def find_fundamental_mtx(self, use_corners: bool=False) -> np.ndarray:
+        """Find the fundamental matrix between the source and destination
+        cameras
+
+        :return: Fundamental matrix
+        :rtype: np.ndarray
+        """        
+
+        # find points and descriptors
+        if use_corners:
+            # use the corner points already found in the source and destination images during geometric calibration...
+            # but then, what are the descriptors for these points?
+            self.src_pts = self.src.corner_points
+            self.dst_pts = self.dst.corner_points
+            # self.src_pt_dsc = ???
+            # self.dst_pt_dsc = ???
+        else: # otherwise, perform new feature searches            
+            self.src_pts, self.src_pt_dsc = self.find_features('source')
+            self.dst_pts, self.dst_pt_dsc = self.find_features('destination')        
+        F, mask = cv2.findFundamentalMat(self.src_pts,self.dst_pts,cv2.FM_LMEDS)
+        self.f_mtx = F
+        # update the matches to only include those that are inliers
+        self.src_pts = self.src_pts[mask.ravel()==1]
+        self.dst_pts = self.dst_pts[mask.ravel()==1]
+        return F
+    
+    def find_essential_mtx(self) -> np.ndarray:
+            """Find the essential matrix between the source and destination
+            cameras
+
+            :return: Essential matrix
+            :rtype: np.ndarray
+            """                
+            self.src_pts = self.src.corner_points
+            self.dst_pts = self.dst.corner_points
+       
+            E, mask = cv2.findEssentialMat(
+                self.src_pts,
+                self.dst_pts,
+                self.src.mtx,
+                self.src.dist,
+                self.dst.mtx,
+                self.dst.dist              
+                )
+            self.e_mtx = E
+            # update the matches to only include those that are inliers
+            self.src_pts = self.src_pts[mask.ravel()==1]
+            self.dst_pts = self.dst_pts[mask.ravel()==1]
+            return E
 
     def find_matches(self, use_corners: bool=False) -> int:
         """Find matching points in the source and destination images
@@ -858,115 +1255,6 @@ class StereoPair():
             ax.imshow(img, origin='upper')
             ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
 
-    def calibrate_stereo(self):
-        """Calibrate the given stereo pair of cameras
-        """        
-        obj_pts = self.src.object_points
-        self.src_pts = self.src.corner_points
-        self.dst_pts = self.dst.corner_points       
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001) 
-        ret, CM1, dist1, CM2, dist2, R, T, E, F = cv2.stereoCalibrate(
-            [obj_pts], 
-            [self.src_pts], [self.dst_pts], 
-            self.src.mtx, self.src.dist,
-            self.dst.mtx, self.dst.dist, 
-            (self.src.width, self.src.height), 
-            criteria = criteria, 
-            flags = cv2.CALIB_FIX_INTRINSIC)
-        self.e_mtx = E
-        self.f_mtx = F
-        return ret, CM1, dist1, CM2, dist2, R, T, E, F
-
-    def find_fundamental_mtx(self, use_corners: bool=False) -> np.ndarray:
-        """Find the fundamental matrix between the source and destination
-        cameras
-
-        :return: Fundamental matrix
-        :rtype: np.ndarray
-        """        
-
-        # find points and descriptors
-        if use_corners:
-            # use the corner points already found in the source and destination images during geometric calibration...
-            # but then, what are the descriptors for these points?
-            self.src_pts = self.src.corner_points
-            self.dst_pts = self.dst.corner_points
-            # self.src_pt_dsc = ???
-            # self.dst_pt_dsc = ???
-        else: # otherwise, perform new feature searches            
-            self.src_pts, self.src_pt_dsc = self.find_features('source')
-            self.dst_pts, self.dst_pt_dsc = self.find_features('destination')        
-        F, mask = cv2.findFundamentalMat(self.src_pts,self.dst_pts,cv2.FM_LMEDS)
-        self.f_mtx = F
-        # update the matches to only include those that are inliers
-        self.src_pts = self.src_pts[mask.ravel()==1]
-        self.dst_pts = self.dst_pts[mask.ravel()==1]
-        return F
-    
-    def find_essential_mtx(self) -> np.ndarray:
-            """Find the essential matrix between the source and destination
-            cameras
-
-            :return: Essential matrix
-            :rtype: np.ndarray
-            """                
-            self.src_pts = self.src.corner_points
-            self.dst_pts = self.dst.corner_points
-       
-            E, mask = cv2.findEssentialMat(
-                self.src_pts,
-                self.dst_pts,
-                self.src.mtx,
-                self.src.dist,
-                self.dst.mtx,
-                self.dst.dist              
-                )
-            self.e_mtx = E
-            # update the matches to only include those that are inliers
-            self.src_pts = self.src_pts[mask.ravel()==1]
-            self.dst_pts = self.dst_pts[mask.ravel()==1]
-            return E
-
-    def compute_epilines(self, matrix_type: str='F') -> None:
-        """Compute epilines for each camera in each corresponding image
-        """        
-        # self.src_elines = np.matmul(self.e_mtx.T, self.dst_pts.reshape(-1,1,2)).reshape(-1,3)
-        # self.dst_elines = np.matmul(self.e_mtx.T, self.src_pts.reshape(-1,1,2)).reshape(-1,3)
-        if matrix_type == 'F':
-            mtx = self.f_mtx
-        elif matrix_type == 'E':
-            mtx = self.e_mtx
-        else:
-            raise ValueError('Matrix type must be "F" or "E"')
-        
-        # self.src_elines = cv2.computeCorrespondEpilines(self.dst_pts.reshape(-1,1,2),2,mtx.T).reshape(-1,3)
-        # self.dst_elines = cv2.computeCorrespondEpilines(self.src_pts.reshape(-1,1,2),1,mtx.T).reshape(-1,3)
-
-        self.dst_elines = cv2.computeCorrespondEpilines(self.src_pts.reshape(-1,1,2),2,mtx.T).reshape(-1,3)
-        self.src_elines = cv2.computeCorrespondEpilines(self.dst_pts.reshape(-1,1,2),1,mtx.T).reshape(-1,3)
-        return self.src_elines, self.dst_elines
-
-    def draw_epilines(self, ax: object=None) -> None:
-        """Draw epilines in the destination image
-        """        
-        r,c = self.dst.img_ave.shape
-        img = (self.dst.img_ave.round()/16).astype(np.uint8)
-        img = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
-        pts = self.dst_pts
-        lines = self.dst_elines
-        for r,pt in zip(lines,pts):
-            color = tuple(np.random.randint(0,255,3).tolist())
-            x0,y0 = map(int, [0, -r[2]/r[1] ])
-            x1,y1 = map(int, [c, -(r[2]+r[0]*c)/r[1] ])
-            img = cv2.line(img, (x0,y0), (x1,y1), color,1)
-            img = cv2.circle(img,tuple(pt.flatten().astype(int)),5,color,-1)
-        if ax is None:
-            plt.imshow(img, origin='upper')            
-            plt.show()
-        else:
-            ax.imshow(img, origin='upper')
-            ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
-
     def find_homography(self) -> np.ndarray:
         """Find the homography between the source and destination cameras
 
@@ -980,12 +1268,12 @@ class StereoPair():
         """        
         pass
 
-    
-
-
-def grid_plot(title: str=None):
+def grid_plot(title: str=None, projection: str=None):
     cam_ax = {}
-    fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W))
+    if projection == '3d':
+        fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W), subplot_kw=dict(projection='3d'))
+    else:
+        fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W))
     # TODO update this according to camera number
     cam_ax[2] = ax[0][0] # 400
     cam_ax[5] = ax[0][1] # 950
@@ -999,6 +1287,24 @@ def grid_plot(title: str=None):
     # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
     fig.suptitle(title)
     return fig, cam_ax
+
+def channel_cols(channel: str, rgb: bool=False) -> Tuple[int,int,int]:
+    
+    colours = {}
+    colours[2] = 'tab:cyan' # 400
+    colours[1] = 'tab:blue'# 475
+    colours[7] = 'tab:green'# 550
+    colours[3] = 'tab:olive'# 550
+    colours[6] = 'tab:orange'# 650
+    colours[4] = 'tab:red'# 735
+    colours[0] = 'tab:purple'# 850
+    colours[5] = 'tab:pink'# 950
+    # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')    
+    if rgb:
+        colour = np.array(colors.to_rgba(colours[channel])[:-1])*255
+    else:
+        colour = colours[channel]
+    return colour
 
 def show_grid(fig, ax):
     # get individual axis dimensions/ratio
@@ -1245,7 +1551,7 @@ def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: 
     show_grid(fig1, ax1)
     return cali_coeffs
 
-def load_sample(subject: str='sample', roi: bool=False, caption: str=None, threshold: Tuple[float,float]=(None,None)) -> Dict:
+def load_sample(subject: str='sample', dark_subject: str='sample', roi: bool=False, caption: str=None, threshold: Tuple[float,float]=(None,None)) -> Dict:
     """Load images of the sample.
 
     :param subject: Directory of sample images, defaults to 'sample'
@@ -1268,7 +1574,7 @@ def load_sample(subject: str='sample', roi: bool=False, caption: str=None, thres
         smpl = LightImage(subject, channel)
         smpl.image_load()
         print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
-        dark_smpl = DarkImage(subject, channel)
+        dark_smpl = DarkImage(dark_subject, channel)
         dark_smpl.image_load()
         # Check exposure times are equal
         light_exp = smpl.exposure
@@ -1592,7 +1898,7 @@ def load_geometric_calibration(subject: str='geometric_calibration', dark= 'geom
     show_grid(fig, ax)
     return geocs
 
-def checkerboard_calibration(geocs: Dict, caption: str=None) -> Dict:
+def checkerboard_calibration(geocs: Dict, chkrbrd: Tuple, roi: bool=False, caption: str=None) -> Dict:
     """Find the checkerboard corners in the geometric calibration image for each
     channel.
 
@@ -1611,7 +1917,7 @@ def checkerboard_calibration(geocs: Dict, caption: str=None) -> Dict:
     for channel in channels:
         cali_src = geocs[channel]
         print(f'Finding Checkerboard Corners for: {cali_src.camera} ({cali_src.cwl} nm)')
-        src = GeoCalImage(cali_src, roi=False)
+        src = GeoCalImage(cali_src, chkrbrd=chkrbrd, roi=roi)
         # target_points = src.define_calibration_points()
         # found_points = src.find_corners()
         src.show_corners(ax=ax[src.camera], corner_roi=True)
