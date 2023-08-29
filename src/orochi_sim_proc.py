@@ -25,12 +25,12 @@ FIG_W = 10 # figure width in inches
 class Image:
     """Super class for handling image import and export.
     """
-    def __init__(self, subject: str, channel: str, img_type: str, roi: bool=False) -> None:
+    def __init__(self, scene_path: Path, channel: str, img_type: str, roi: bool=False) -> None:
         """Initialise properties. Most of these are populated during image load.
         """
-        self.dir = Path('..', 'data', subject, channel)
+        self.dir = Path(scene_path, channel)
         # TODO check subject directory exists
-        self.subject = subject
+        self.subject = scene_path.name
         self.channel = channel
         self.img_type = img_type
         self.camera = None
@@ -1868,7 +1868,55 @@ def plot_roi_reflectance(
 
     return results
 
-def load_geometric_calibration(subject: str='geometric_calibration', dark= 'geometric_calibration', caption: str=None) -> Dict:
+def build_scene_directory(
+        scene_name: str,
+        src_scene_path: str, 
+        src_dark_path: str,         
+        scenes_path: str) -> None:
+    """Build the directory tree in the scenes directory for the given scene and
+      dark frame data in the data directory.
+
+    :param scene_name: name of the scene directory
+    :type scene_name: str
+    :param src_scene_path: path of the scene direcotry in the 'data' directory
+    :type src_scene_path: Path
+    :param src_dark_path: path of the dark frame direcotry in the 'data' directory
+    :type src_dark_path: Path
+    :param scenes_dir: path of the scenes direcotry in the current session
+    :type scenes_dir: Path
+    """        
+    # build a scene directory under this name
+    scene_path = Path(scenes_path, scene_name)
+    scene_path.mkdir(exist_ok=True)
+    # build the calibration directory
+    cali_path = Path(scene_path, 'calibration')
+    cali_path.mkdir(exist_ok=True)
+    # build the channels and stereo_pairs calibration directories
+    cali_channels_path = Path(cali_path, 'channels')
+    cali_channels_path.mkdir(exist_ok=True)
+    cali_stereo_pairs_path = Path(cali_path, 'stereo_pairs')
+    cali_stereo_pairs_path.mkdir(exist_ok=True)    
+    # build a dark frame directory and symlink to the dark path
+    dark_path = Path(cali_channels_path, 'dark_frames')
+    if src_dark_path.exists():
+        if not dark_path.exists():
+            dark_path.symlink_to(src_dark_path.resolve(), target_is_directory=True)      
+    else:
+        raise ValueError(f'Dark frame directory does not exist: {src_dark_path}')
+    # build the raw data directory
+    raw_path = Path(scene_path, 'raw')
+    if src_scene_path.exists():
+        if not raw_path.exists():
+            raw_path.symlink_to(src_scene_path.resolve(), target_is_directory=True)
+    else:
+        raise ValueError(f'Scene directory does not exist: {src_scene_path}')
+    # build the products directory
+    prod_path = Path(scene_path, 'products')
+    prod_path.mkdir(exist_ok=True)
+
+    return raw_path, dark_path
+
+def load_geometric_calibration(scene_path: Path, dark_path: Path, caption: str=None) -> Dict:
     """Load the geometric calibration images.
 
     :param subject: directory of target images, defaults to 'geometric_calibration'
@@ -1876,7 +1924,7 @@ def load_geometric_calibration(subject: str='geometric_calibration', dark= 'geom
     :return: Dictionary of geometric correction LightImages
     :rtype: Dict
     """    
-    channels = sorted(list(Path('..', 'data',subject).glob('[!._]*')))
+    channels = sorted(list(scene_path.glob('[!._]*')))
     geocs = {}
     fig, ax = grid_plot('Geometric Calibration Target')
     if caption is not None:
@@ -1884,11 +1932,11 @@ def load_geometric_calibration(subject: str='geometric_calibration', dark= 'geom
     for channel_path in channels:
         channel = channel_path.name
         # load the geometric calibration images
-        geoc = LightImage(subject, channel)
+        geoc = LightImage(scene_path, channel)
         geoc.image_load()
         print(f'Loading Geometric Target for: {geoc.camera} ({geoc.cwl} nm)')
         # load the geometric calibration dark frames
-        dark_geoc = DarkImage(dark, channel)
+        dark_geoc = DarkImage(dark_path, channel)
         dark_geoc.image_load()
         # subtract the dark frame
         geoc.dark_subtract(dark_geoc)
