@@ -79,8 +79,8 @@ class Image:
             meta = img.imagej_metadata
             self.camera = self.check_property(self.camera, meta['camera'])
             self.serial = self.check_property(self.serial, meta['serial'])
-            self.width = self.check_property(self.width, img_arr.shape[0])
-            self.height = self.check_property(self.height, img_arr.shape[1])
+            self.width = self.check_property(self.width, img_arr.shape[1])
+            self.height = self.check_property(self.height, img_arr.shape[0])
             self.cwl = self.check_property(self.cwl, meta['cwl'])
             self.fwhm = self.check_property(self.fwhm, meta['fwhm'])
             self.fnumber = self.check_property(self.fnumber, meta['f-number'])
@@ -1266,7 +1266,7 @@ class StereoPair():
         """        
         if view == 'dst':
             r,c = self.dst.img_ave.shape
-            img = (self.dst.img_ave.round()/16).astype(np.uint8)
+            img = (np.floor(self.dst.img_ave)/16).astype(np.uint8)
             img = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
             pts = self.dst_pts
             lines = self.dst_elines
@@ -1274,7 +1274,7 @@ class StereoPair():
         elif view == 'src':
             r,c = self.src.img_ave.shape
             if ax.title.get_text() == '':
-                img = (self.src.img_ave.round()/16).astype(np.uint8)
+                img = (np.floor(self.src.img_ave)/16).astype(np.uint8)
                 img = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
             else:
                 img = ax.get_images()[0]._A
@@ -1286,7 +1286,10 @@ class StereoPair():
             color = channel_cols(self.dst.camera, rgb=True) # tuple(np.random.randint(0,255,3).tolist())
             x0,y0 = map(int, [0, -r[2]/r[1] ])
             x1,y1 = map(int, [c, -(r[2]+r[0]*c)/r[1] ])
-            img = cv2.line(img, (x0,y0), (x1,y1), color,1)
+            try:
+                img = cv2.line(img, (x0,y0), (x1,y1), color,1)
+            except:
+                print('stop')
             img = cv2.circle(img,tuple(pt.flatten().astype(int)),5,color,-1)            
         
         if ax is None:
