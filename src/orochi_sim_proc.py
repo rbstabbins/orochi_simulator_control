@@ -838,19 +838,19 @@ class GeoCalImage(Image):
         rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
         img = cv2.drawChessboardCorners(rgb, (self.crows,self.ccols), self.corner_points, self.all_corners)
         if self.roi:
-            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
+            img = img[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw]
         elif corner_roi and self.all_corners:
             # find the roi that bounds the corners
-            self.roix = int(np.min(self.corner_points[:,:,1]))
-            self.roiy = int(np.min(self.corner_points[:,:,0]))
-            self.roiw = int(np.max(self.corner_points[:,:,1])-self.roix)
-            self.roih = int(np.max(self.corner_points[:,:,0])-self.roiy)
+            self.roix = int(np.min(self.corner_points[:,:,0]))
+            self.roiy = int(np.min(self.corner_points[:,:,1]))
+            self.roiw = int(np.max(self.corner_points[:,:,0])-self.roix)
+            self.roih = int(np.max(self.corner_points[:,:,1])-self.roiy)
             pad = int(0.3*self.roiw)
             self.roix = np.clip(self.roix-pad, 0, self.width)
             self.roiy = np.clip(self.roiy-pad, 0, self.height)            
             self.roiw = np.clip(self.roiw, 0, self.width-self.roix-2*pad)+2*pad
             self.roih = np.clip(self.roih, 0, self.height-self.roiy-2*pad)+2*pad
-            img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]                
+            img = img[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw]                
         ax.imshow(img, origin='upper', cmap='gray')        
         ax.set_title(f'{self.camera}: {self.cwl} nm')
         if ax is None:
@@ -1114,20 +1114,13 @@ class StereoPair():
         # src_img = cv2.cvtColor(src_img,cv2.COLOR_GRAY2BGR)
         dst_img = np.clip(np.floor(self.dst.img_ave/16),0,255).astype(np.uint8)
         # dst_img = cv2.cvtColor(dst_img,cv2.COLOR_GRAY2BGR)        
-
-        # problem - how do we map these pixels to a new roi?
-        # we could apply the ROI as a mask, setting all other pixels to 0.
-        # this mean we're only left with image information to perform the matching on.
-
-        # src_img = cv2.rectangle(src_img, (self.src.roiy,self.src.roix), (self.src.roiy+self.src.roih,self.src.roix+self.src.roiw), (255,0,0), 5)
-        # dst_img = cv2.rectangle(dst_img, (self.dst.roiy,self.dst.roix), (self.dst.roiy+self.dst.roih,self.dst.roix+self.dst.roiw), (255,0,0), 5)
         
         # set all pixels outside the roi to 0
-        if roi:
+        if True:
             src_img[:self.src.roix,:] = 0
             src_img[self.src.roix+self.src.roiw:,:] = 0
             src_img[:,:self.src.roiy] = 0
-            src_img[:,self.src.roiy+self.src.roih:] = 0        
+            src_img[:,self.src.roiy+self.src.roih:] = 0
 
             dst_img[:self.dst.roix,:] = 0
             dst_img[self.dst.roix+self.dst.roiw:,:] = 0
@@ -1137,9 +1130,9 @@ class StereoPair():
         src_img = cv2.remap(src_img, self.src_map1, self.src_map2, cv2.INTER_LINEAR)
         dst_img = cv2.remap(dst_img, self.dst_map1, self.dst_map2, cv2.INTER_LINEAR)
         
-        if self.v_alignment:
-            src_img = cv2.rotate(src_img, cv2.ROTATE_90_CLOCKWISE)
-            dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_CLOCKWISE)        
+        # if self.v_alignment:
+        #     src_img = cv2.rotate(src_img, cv2.ROTATE_90_CLOCKWISE)
+        #     dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_CLOCKWISE)        
             
         self.src_rect = src_img
         self.dst_rect = dst_img
@@ -1154,8 +1147,8 @@ class StereoPair():
             # should probably really have a new rectified image class...
             self.src_rect_roi = self.find_rect_roi(self.src_rect)     
             self.dst_rect_roi = self.find_rect_roi(self.dst_rect)
-            src_img = src_img[self.src_rect_roi['x']:self.src_rect_roi['x']+self.src_rect_roi['w'], self.src_rect_roi['y']:self.src_rect_roi['y']+self.src_rect_roi['h']]
-            dst_img = dst_img[self.src_rect_roi['x']:self.src_rect_roi['x']+self.src_rect_roi['w'], self.dst_rect_roi['y']:self.dst_rect_roi['y']+self.dst_rect_roi['h']]
+            src_img = src_img[self.src_rect_roi['y']:self.src_rect_roi['y']+self.src_rect_roi['h'], self.src_rect_roi['x']:self.src_rect_roi['x']+self.src_rect_roi['w']]
+            dst_img = dst_img[self.dst_rect_roi['y']:self.dst_rect_roi['y']+self.dst_rect_roi['h'], self.dst_rect_roi['x']:self.dst_rect_roi['x']+self.dst_rect_roi['w']]
 
         ax2[0].imshow(dst_img, origin='upper')  
         ax2[1].imshow(src_img, origin='upper')
@@ -1189,31 +1182,33 @@ class StereoPair():
         # to do need to balance the offset in the y direction so that the content is at matching epilines
 
         if rect_img.max() != 0:
-            rect_roi['x'] = np.min(np.where(np.sum(rect_img, axis=1)>0))
-            rect_roi['y'] = np.min(np.where(np.sum(rect_img, axis=0)>0))
-            rect_roi['w'] = np.max(np.where(np.sum(rect_img, axis=1)>0)) - rect_roi['x']
-            rect_roi['h'] = np.max(np.where(np.sum(rect_img, axis=0)>0)) - rect_roi['y']
+            rect_roi['x'] = np.min(np.where(np.sum(rect_img, axis=0)>0))
+            rect_roi['y'] = np.min(np.where(np.sum(rect_img, axis=1)>0))
+            rect_roi['w'] = np.max(np.where(np.sum(rect_img, axis=0)>0)) - rect_roi['x']
+            rect_roi['h'] = np.max(np.where(np.sum(rect_img, axis=1)>0)) - rect_roi['y']
         else:
             rect_roi['x'] = 0
             rect_roi['y'] = 0
-            rect_roi['w'] = rect_img.shape[0]
-            rect_roi['h'] = rect_img.shape[1]
+            rect_roi['w'] = rect_img.shape[1]
+            rect_roi['h'] = rect_img.shape[0]
         return rect_roi 
 
     def compute3D(self):
         """Compute 3D point locations
         """        
 
-        if self.src_p is None:
+        if len(self.src_pts) == 0:
             # compute p_mtx
-            pass
-        if self.dst_p is None:
+            return None
+        if len(self.dst_pts) == 0:
             # compute p_mtx
-            pass
+            return None
 
         try:
-            src_pts = np.array([pt.pt for pt in self.src_pts]).T
-            dst_pts = np.array([pt.pt for pt in self.dst_pts]).T
+            # src_pts = np.array([pt.pt for pt in self.src_pts]).T
+            # dst_pts = np.array([pt.pt for pt in self.dst_pts]).T
+            src_pts = np.array([self.src_pts[m.queryIdx].pt for m in self.matches]).T
+            dst_pts = np.array([self.dst_pts[m.trainIdx].pt for m in self.matches]).T
         except:
             print('stop')
 
@@ -1304,16 +1299,17 @@ class StereoPair():
     def compute_disparity(self, ax: object=None) -> None:
         """Compute a disparity map for the given image pair.
         """        
-        matcher = cv2.StereoSGBM_create(numDisparities=16, blockSize=5)
-        self.stereoMatcher = matcher      
+        matcher = cv2.StereoSGBM_create(numDisparities=16, blockSize=7)
+        self.stereoMatcher = matcher
 
         src_img = self.src_rect
         dst_img = self.dst_rect
 
         self.disparity = matcher.compute(src_img, dst_img)
+
         if ax is not None:
             disp_roi = self.dst_rect_roi
-            disp_crop = self.disparity[disp_roi['x']:disp_roi['x']+disp_roi['w'], disp_roi['y']:disp_roi['y']+disp_roi['h']]
+            disp_crop = self.disparity[disp_roi['y']:disp_roi['y']+disp_roi['h'], disp_roi['x']:disp_roi['x']+disp_roi['w']]
             ax.imshow(disp_crop, origin='upper', cmap='gray')
             ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
 
@@ -1321,14 +1317,18 @@ class StereoPair():
         """Compute the 3D point cloud from the disparity map, Q matrix and 
         rectified projection matrices.
         """
-        self.points3D = cv2.reprojectImageTo3D(self.disparity, self.q_mtx)
+        self.points3D = cv2.reprojectImageTo3D(self.disparity, self.q_mtx, handleMissingValues=True)
         self.depth = self.points3D[:,:,2]
         if ax is not None:
             depth_roi = self.dst_rect_roi
-            depth_crop = self.depth[depth_roi['x']:depth_roi['x']+depth_roi['w'], depth_roi['y']:depth_roi['y']+depth_roi['h']]
-            ax.imshow(depth_crop, origin='upper', cmap='gray')
+            depth_crop = self.depth[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w']]
+            disp = ax.imshow(depth_crop, origin='upper', cmap='viridis')
+            im_ratio = depth_crop.shape[1]/depth_crop.shape[0]
+            cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)
             ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
-        return self.points3D        
+        # crop the points
+        self.points3D = self.points3D[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w'],:]
+        return self.points3D    
             
     def find_fundamental_mtx(self, use_corners: bool=False) -> np.ndarray:
         """Find the fundamental matrix between the source and destination
