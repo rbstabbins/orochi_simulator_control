@@ -466,10 +466,10 @@ class Channel:
                 searching = False # update searcing or continue
                 return t_exp
 
-            if k_quantile >= self.max_dn:
-                k_quantile = 5*k_quantile
-            elif k_quantile <= 0.1 * self.max_dn:
-                k_quantile = k_quantile/5
+            # if k_quantile >= self.max_dn:
+            #     k_quantile = 5*k_quantile
+            # elif k_quantile <= 0.1 * self.max_dn:
+            #     k_quantile = k_quantile/5
 
             if k_quantile == 1.0/5:
                 t_exp_scale = 1.5
