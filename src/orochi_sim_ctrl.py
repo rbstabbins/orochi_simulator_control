@@ -556,14 +556,15 @@ class Channel:
             self.set_frame_rate(30.0) # set frame rate back to 30 fps
         return image
 
-    def show_image(self, img_arr, title):
+    def show_image(self, img_arr, title, ax: object=None):
         # if the image is 16 bit, convert to 8 bit for display
-        fig, ax = plt.subplots(figsize=(5.8, 4.1))
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(5.8, 4.1))
         disp = ax.imshow(img_arr, origin='lower')
         ax.set_title(title)
         plt.colorbar(disp, ax=ax)
         plt.tight_layout()
-        plt.show()
+        # plt.show()
 
     def image_capture_repeat(self, n: int=25, 
                              roi: bool=True) -> Tuple[np.ndarray, np.ndarray]:
@@ -783,9 +784,9 @@ def set_channel_exposures(cameras: List, exposures: Union[float, Dict]) -> None:
 
 # Image Capture and Information Export
 def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None, 
-                           session: str='test_session', scene: str='text_scene',
+                           session: str='test_session', scene: str='test_scene',
                            img_type: str='img', repeats: int=1, roi=False,
-                           show_img: bool=False, save_img: bool=False) -> None:
+                           show_img: bool=False, save_img: bool=False, ax: object=None) -> None:
     """Capture a sequence of images from each camera.
 
     :param cameras: List of connected camera objects
@@ -822,7 +823,11 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
             img = camera.image_capture(roi=roi)
             if show_img:
                 title = f'Device {cam_num} {session} {scene} #{i}'
-                camera.show_image(img, title)
+                if ax is not None:
+                    this_ax = ax[cam_num]
+                else:
+                    this_ax = None
+                camera.show_image(img, title, ax=this_ax)
             if save_img:
                 camera.save_image(str(i), img_type, img)
         print('-----------------------------------')
