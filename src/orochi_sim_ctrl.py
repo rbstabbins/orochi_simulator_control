@@ -9,7 +9,7 @@ import ctypes
 from datetime import date
 from pathlib import Path
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -762,8 +762,27 @@ def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
         print('-----------------------------------')
     return exposures
 
+def set_channel_exposures(cameras: List, exposures: Union[float, Dict]) -> None:
+    """Set the exposure time for each camera.
+
+    :param cameras: list of camera objects
+    :type cameras: List
+    :param exposures: exposure time for each camera
+    :type exposures: Union[double, Dict]
+    """
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        if exposures.isinstance(float):
+            camera.set_exposure(exposures)
+        else:
+            camera.set_exposure(exposures[camera.name])
+        print('-----------------------------------')
+
 # Image Capture and Information Export
-def capture_channel_images(cameras: List, exposures: Dict, 
+def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None, 
                            session: str='test_session', scene: str='text_scene',
                            img_type: str='img', repeats: int=1, roi=False,
                            show_img: bool=False, save_img: bool=False) -> None:
@@ -792,8 +811,11 @@ def capture_channel_images(cameras: List, exposures: Dict,
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        camera.set_property('Exposure', 'Value', exposures[camera.name], 'AbsoluteValue')
-        camera.set_property('Exposure', 'Auto', 0, 'Switch')
+        if exposures.isinstance(float):            
+            camera.set_exposure(exposures)
+        elif exposures.isinstance(dict):
+            camera.set_exposure(exposures[camera.name])
+        
         camera.session = session # set the subject string
         camera.scene = scene
         for i in range(repeats):
