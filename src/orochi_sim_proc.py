@@ -8,7 +8,7 @@ from pathlib import Path
 import os
 from collections import OrderedDict
 import cv2
-import dict2xml
+# import dict2xml
 import matplotlib.pyplot as plt
 from matplotlib import colors
 import matplotlib as mpl
@@ -1538,7 +1538,7 @@ def channel_cols(channel: str, rgb: bool=False) -> Tuple[int,int,int]:
 
 def show_grid(fig, ax):
     # get individual axis dimensions/ratio
-    # ax[8].legend()
+    ax[8].legend()
     fig.tight_layout()
     ax_h, ax_w = ax[0].bbox.height / fig.dpi, ax[0].bbox.width / fig.dpi
     # update figure size to match
