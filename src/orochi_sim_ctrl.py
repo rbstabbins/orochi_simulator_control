@@ -486,11 +486,39 @@ class Channel:
         title = f'Band {cam_num} ({self.name}) ROI Check: ROI'
         self.show_image(img, title)
 
-    def check_roi_uniformity(self) -> float:
+    def set_roi_manually(self, roi_size: int=None) -> None:
+        """Set the ROI of the given channel manually.
+        """        
+        channel_view = self.image_capture(roi=False)
+        # convert to 8-bit for cv2 view
+        if self.max_dn == 2**8 - 1:
+            channel_view = channel_view.astype(np.uint8)
+        elif self.max_dn == 2**12 - 2:
+            channel_view = (channel_view / 2**4).astype(np.uint8)
+
+        roi = cv2.selectROI(f'ROI Selection: {self.camera_props["number"]}_{int(self.camera_props["cwl"])}', channel_view, showCrosshair=True)
+
+        print(roi)
+        xlim = roi[1]
+        ylim = roi[0]
+        if roi_size is None:
+            roi_size = roi[2]
+        else:
+            print(f'Overwriting ROI size with specified value: {roi_size}')
+
+        # update the camera properties with the coodinates
+        self.camera_props['roix'] = xlim
+        self.camera_props['roiy'] = ylim
+        self.camera_props['roiw'] = roi_size
+        self.camera_props['roih'] = roi_size
+
+        cv2.destroyAllWindows()
+
+    def check_roi_uniformity(self, ax: object=None, histo_ax: object=None) -> float:
         # check the uniformity of the ROI
-        self.find_exposure(roi=True)
+        # self.find_exposure(roi=True)
         img, _ = self.image_capture_repeat(n=25, roi=True)
-        self.show_image(img, 'ROI Uniformity')
+        self.show_image(img, f'{self.camera_props["number"]}_{self.camera_props["cwl"]}', ax=ax, histo_ax=histo_ax)
         mean = np.mean(img)
         std = np.std(img)
         print(f'ROI Uniformity: {100.0 * std / mean} %')
@@ -556,15 +584,27 @@ class Channel:
             self.set_frame_rate(30.0) # set frame rate back to 30 fps
         return image
 
-    def show_image(self, img_arr, title, ax: object=None):
+    def show_image(self, img_arr, title, ax: object=None, histo_ax: object=None):
         # if the image is 16 bit, convert to 8 bit for display
         if ax is None:
             fig, ax = plt.subplots(figsize=(5.8, 4.1))
         disp = ax.imshow(img_arr, origin='lower')
         ax.set_title(title)
-        plt.colorbar(disp, ax=ax)
-        plt.tight_layout()
+        im_ratio = img_arr.shape[0] / img_arr.shape[1]
+        cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio, label='DN')
         # plt.show()
+
+        # add histogram
+        if histo_ax is not None:
+            counts, bins = np.histogram(img_arr[np.nonzero(np.isfinite(img_arr))], bins=128)
+            histo_ax.hist(bins[:-1], bins, weights=counts,
+                        label=f"{self.camera_props['number']}_{int(self.camera_props['cwl'])}",
+                        log=True, fill=False, stacked=True, histtype='step')
+            histo_ax.set_xlabel('DN')
+            # plt.tight_layout()
+            # histo_ax.legend()
+
+        # plt.tight_layout()
 
     def image_capture_repeat(self, n: int=25, 
                              roi: bool=True) -> Tuple[np.ndarray, np.ndarray]:
@@ -639,7 +679,8 @@ def load_camera_config() -> Dict:
     :return: dictionary of cameras and settings
     :rtype: Dict
     """
-    cameras = pd.read_csv('camera_config.csv', index_col=0)
+    camera_config_path = Path('..', '..', 'data', 'calibration', 'camera_config.csv')
+    cameras = pd.read_csv(camera_config_path, index_col=0)
     cameras = cameras.T.astype({
         'number': 'int',
         'serial': str,
@@ -744,6 +785,23 @@ def find_camera_rois(cameras: List, roi_size: int=128):
 
     export_camera_config(cameras)
 
+def set_camera_rois(cameras: List, roi_size: int=None):
+    """Manually set the ROI for each connected camera, and update the camera 
+    properties
+
+    :param cameras: List of connected cameras, under serial number name
+    :type cameras: List
+    """
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num} ({camera.name})')
+        print('-----------------------------------')
+        camera.set_roi_manually(roi_size=roi_size)
+        print('-----------------------------------')
+
+    export_camera_config(cameras)
+
 def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
                       tol=1, limit=10, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
@@ -776,10 +834,12 @@ def set_channel_exposures(cameras: List, exposures: Union[float, Dict]) -> None:
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        if exposures.isinstance(float):
-            camera.set_exposure(exposures)
+        if isinstance(exposures, float):
+            expo = exposures
         else:
-            camera.set_exposure(exposures[camera.name])
+            expo = exposures[camera.name]
+        camera.set_exposure(expo)
+        print(f'Exposure set to {expo} s')
         print('-----------------------------------')
 
 # Image Capture and Information Export
@@ -812,9 +872,9 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        if exposures.isinstance(float):            
+        if isinstance(exposures, float):            
             camera.set_exposure(exposures)
-        elif exposures.isinstance(dict):
+        elif isinstance(exposures, dict):
             camera.set_exposure(exposures[camera.name])
         
         camera.session = session # set the subject string
@@ -827,7 +887,7 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
                     this_ax = ax[cam_num]
                 else:
                     this_ax = None
-                camera.show_image(img, title, ax=this_ax)
+                camera.show_image(img, title, ax=this_ax, histo_ax=ax[8])
             if save_img:
                 camera.save_image(str(i), img_type, img)
         print('-----------------------------------')
@@ -843,10 +903,10 @@ def export_camera_config(cameras: List):
         cam_props = list(camera.camera_props.values())
         index = list(camera.camera_props.keys())
         cam_info.append(pd.Series(cam_props, index = index, name = camera.name))
-        subject = camera.subject
+        session = camera.session
     cam_df = pd.concat(cam_info, axis=1)
     cam_df.sort_values('number', axis=1, ascending=True, inplace=True)
-    subject_dir = Path('..', '..', 'data', 'sessions', subject)
+    subject_dir = Path('..', '..', 'data', 'sessions', session)
     subject_dir.mkdir(parents=True, exist_ok=True)
     camera_file = Path(subject_dir, 'camera_config.csv')
     cam_df.to_csv(camera_file)
@@ -980,7 +1040,7 @@ def load_exposures(cameras, subject) -> Dict:
             exposures[cam_name] = float(f.read())
     return exposures
 
-def check_channel_roi_uniformity(cameras: List) -> None:
+def check_channel_roi_uniformity(cameras: List, ax: object=None) -> None:
     """Check the uniformity of the ROI for each camera.
 
     :param cameras: List of connected camera objects
@@ -991,7 +1051,13 @@ def check_channel_roi_uniformity(cameras: List) -> None:
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        camera.check_roi_uniformity()
+        if ax is not None:
+            this_ax = ax[cam_num]
+            histo_ax = ax[8]
+        else:
+            this_ax = None
+            histo_ax = None
+        camera.check_roi_uniformity(ax=this_ax, histo_ax=histo_ax)
         print('-----------------------------------')
 
 def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
