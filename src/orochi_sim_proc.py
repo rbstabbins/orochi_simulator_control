@@ -1397,8 +1397,7 @@ class StereoPair():
             elif tvec[1] > 0.05:
                 disparity = cv2.rotate(disparity, cv2.ROTATE_90_COUNTERCLOCKWISE)
         else:
-            if tvec[0] > 0.05:
-                print('stop')
+            if tvec[0] > 0.05:                
                 disparity = cv2.rotate(disparity, cv2.ROTATE_180)                
         
         # self.disparity = disparity
@@ -1684,7 +1683,7 @@ def channel_cols(channel: str, rgb: bool=False) -> Tuple[int,int,int]:
 
 def show_grid(fig, ax):
     # get individual axis dimensions/ratio
-    ax[8].legend()
+    # ax[8].legend()
     fig.tight_layout()
     ax_h, ax_w = ax[0].bbox.height / fig.dpi, ax[0].bbox.width / fig.dpi
     # update figure size to match
