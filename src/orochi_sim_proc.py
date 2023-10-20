@@ -91,9 +91,9 @@ class Image:
                 self.roiy = self.check_property(self.roiy, meta['roiy'])
                 self.roiw = self.check_property(self.roiw, meta['roiw'])
                 self.roih = self.check_property(self.roih, meta['roih'])
-            except KeyError:
+            except (KeyError, ValueError):
                 # read the camera_config file to get the ROI
-                camera_info = osc.load_camera_config()
+                camera_info = osc.load_camera_config(Path(self.scene_dir,'..').resolve())
                 cam_name = f'DMK 33GX249 {int(self.serial)}'
                 cam_props = camera_info[cam_name]
                 self.roix = cam_props['roix']
@@ -153,7 +153,7 @@ class Image:
         self.img_std = self.img_std / self.exposure # assume exposure err. negl.
         self.units = 'DN/s'
 
-    def set_polyroi(self) -> None:
+    def set_polyroi(self, threshold: int=None) -> None:
         """Set an arbitrary polygon region of interest
         """
 
@@ -161,19 +161,23 @@ class Image:
             img = self.roi_image()
         else:
             img = self.img_ave
-        default_backend = mpl.get_backend()
-        mpl.use('Qt5Agg')  # need this backend for RoiPoly to work
-        fig = plt.figure(figsize=(10,10), dpi=80)
-        plt.imshow(img, origin='upper')
-        plt.title('Draw ROI')
+        
+        if threshold is None:
+            default_backend = mpl.get_backend()
+            mpl.use('Qt5Agg')  # need this backend for RoiPoly to work
+            fig = plt.figure(figsize=(10,10), dpi=80)
+            plt.imshow(img, origin='upper')
+            plt.title('Draw ROI')
 
-        my_roi = RoiPoly(fig=fig) # draw new ROI in red color
-        plt.close()
-        # Get the masks for the ROIs
-        outline_mask = my_roi.get_mask(img)
-        roi_mask = outline_mask # np.flip(outline_mask, axis=0)
+            my_roi = RoiPoly(fig=fig) # draw new ROI in red color
+            plt.close()
+            # Get the masks for the ROIs
+            outline_mask = my_roi.get_mask(img)
+            roi_mask = outline_mask # np.flip(outline_mask, axis=0)
 
-        mpl.use(default_backend)  # reset backend
+            mpl.use(default_backend)  # reset backend
+        else:
+            roi_mask = img > threshold
         self.polyroi = roi_mask
 
     def image_stats(self, polyroi: bool=False) -> None:
@@ -255,12 +259,13 @@ class Image:
             cbar.formatter.set_powerlimits((0, 0))
         ax.set_title(f'Device {self.camera} ({int(self.cwl)} nm)')
 
-        # add histogram
-        counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)
-        histo_ax.hist(bins[:-1], bins, weights=counts,
-                      label=f'{int(self.cwl)} nm ({self.camera})',
-                      log=True, fill=False, stacked=True, histtype='step')
-        histo_ax.set_xlabel(label)
+        if histo_ax is not None:
+            # add histogram
+            counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)        
+            histo_ax.hist(bins[:-1], bins, weights=counts,
+                        label=f'{int(self.cwl)} nm ({self.camera})',
+                        log=True, fill=False, stacked=True, histtype='step')
+            histo_ax.set_xlabel(label)
 
         if ax is None:
             plt.tight_layout()
@@ -271,7 +276,7 @@ class Image:
         # TODO add histograms
         # TODO add method for standard deviation image
 
-    def save_tiff(self, save_stack: bool=False):
+    def save_tiff(self, uint8: bool=False):
         """Save the average and error images to TIF files"""
         # TODO update to control conversion to string, and ensure high precision for exposure time
         metadata={
@@ -292,16 +297,21 @@ class Image:
         # average image
         name = 'mean'
         filename = cwl_str+'_'+name+'_'+self.img_type
-        img_file =str(Path(self.dir, filename).with_suffix('.tif'))
+        product_dir = Path(str(self.dir).replace('raw', 'products'))
+        product_dir.mkdir(parents=True, exist_ok=True)
+        img_file =str(Path(product_dir, filename).with_suffix('.tif'))
         # write camera properties to TIF using ImageJ metadata
         out_img = self.img_ave # .astype(np.float32)
+        if uint8:
+            # convert to 8-bit
+            out_img = np.floor(self.img_ave/16).astype(np.uint8)
         tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
         print(f'Mean image written to {img_file}')
 
         # error image
         name = 'error'
         filename = cwl_str+'_'+name+'_'+self.img_type
-        img_file =str(Path(self.dir, filename).with_suffix('.tif'))
+        img_file =str(Path(product_dir, filename).with_suffix('.tif'))
         # write camera properties to TIF using ImageJ metadata
         out_img = self.img_std.astype(np.float32)
         tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
@@ -602,9 +612,15 @@ class CoAlignedImage(Image):
 
         if method == 'ORB':
             # Initiate the ORB feature detector
-            MAX_FEATURES = 500
+            MAX_FEATURES = 1000
             orb = cv2.ORB_create(MAX_FEATURES)
             points, descriptors = orb.detectAndCompute(img, self.mask)
+            self.points = points
+            self.descriptors = descriptors
+        elif method == 'SIFT':
+            # Initiate the SIFT feature detector
+            sift = cv2.SIFT_create()
+            points, descriptors = sift.detectAndCompute(img, self.mask)
             self.points = points
             self.descriptors = descriptors
         return len(self.points)
@@ -1084,11 +1100,12 @@ class StereoPair():
 
         return ret    
 
-    def rectify(self,ax: object=None, roi: bool=False) -> None:
+    def rectify(self,ax: object=None, roi: bool=False, polyroi: bool=False) -> None:
         """Rectify the source and destination images, using the camera
         intrinsic matrices and distortion coefficients, and the stereo
         pair rotation and translation vectors.
-        """        
+        """    
+            
         R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
                 self.src.mtx, self.src.dist,
                 self.dst.mtx, self.dst.dist,
@@ -1115,8 +1132,19 @@ class StereoPair():
         dst_img = np.clip(np.floor(self.dst.img_ave/16),0,255).astype(np.uint8)
         # dst_img = cv2.cvtColor(dst_img,cv2.COLOR_GRAY2BGR)        
         
+        if polyroi:
+            # apply the poly roi mask
+            if self.src.polyroi is not None:                
+                src_img = src_img * self.src.polyroi
+            else:
+                print('Warning - no PolyROI defined for source image')
+            if self.dst.polyroi is not None:
+                dst_img = dst_img * self.dst.polyroi
+            else:
+                print('Warning - no PolyROI defined for destination image')
+
         # set all pixels outside the roi to 0
-        if True:
+        if roi:
             src_img[:self.src.roix,:] = 0
             src_img[self.src.roix+self.src.roiw:,:] = 0
             src_img[:,:self.src.roiy] = 0
@@ -1298,36 +1326,125 @@ class StereoPair():
 
     def compute_disparity(self, ax: object=None) -> None:
         """Compute a disparity map for the given image pair.
-        """        
-        matcher = cv2.StereoSGBM_create(numDisparities=16, blockSize=7)
-        self.stereoMatcher = matcher
-
+        """ 
         src_img = self.src_rect
         dst_img = self.dst_rect
+        
+        # check which image is to left and which is to right via tvecs
+        _, tvec, _ = self.calibration_values()
 
-        self.disparity = matcher.compute(src_img, dst_img)
+        # round tvec to nearest 0.1
+        tvec = np.round(tvec*10)/10
 
-        if ax is not None:
-            disp_roi = self.dst_rect_roi
-            disp_crop = self.disparity[disp_roi['y']:disp_roi['y']+disp_roi['h'], disp_roi['x']:disp_roi['x']+disp_roi['w']]
-            ax.imshow(disp_crop, origin='upper', cmap='gray')
-            ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
+        # check if images are above/below each other
+        if self.v_alignment:
+            if tvec[1] < -0.05:
+                src_img = cv2.rotate(src_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            elif tvec[1] > 0.05:
+                src_img = cv2.rotate(src_img, cv2.ROTATE_90_CLOCKWISE)
+                dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_CLOCKWISE)
+        else:
+            if tvec[0] > 0.05:
+                src_img = cv2.rotate(src_img, cv2.ROTATE_180)
+                dst_img = cv2.rotate(dst_img, cv2.ROTATE_180)
+        left_img = src_img
+        right_img = dst_img
+        
+        # estimate the disparity
+        z_est = 0.8 # 0.8 m
+        f = self.src.mtx[0][0]
+        b = np.sqrt(np.sum(tvec**2))
+        d_max = np.round(f*b/(z_est*0.8)).astype(np.int16)
+        d_min = np.round(f*b/(z_est*1.2)).astype(np.int16)
+        d_range = (np.round((d_max-d_min)/16)*16).astype(np.int16)
+
+        # StereoSGBM Parameters
+        prefiltercap = 5 # 5 - 255
+        block_size = 5 # 1 - 255
+        min_disp = d_min # -128 - +128
+        num_disp = d_range # 16 - 256 (divisble by 16)
+        uniqRatio = 15 # 0 - 100
+        speck_size = 0 # 0 - 1000
+        speck_range = 2 # 0 - 31
+        dispDiff = -1 # 0 - 128        
+
+        matcher = cv2.StereoSGBM_create(
+            preFilterCap=prefiltercap,
+            blockSize=block_size, 
+            minDisparity=min_disp,
+            numDisparities=num_disp,
+            uniquenessRatio=uniqRatio,
+            speckleWindowSize=speck_size,
+            speckleRange=speck_range,
+            disp12MaxDiff=dispDiff,
+            P1=8*block_size**2,
+            P2=32*block_size**2)
+        
+        self.stereoMatcher = matcher        
+
+        disparity = matcher.compute(left_img, right_img)
+
+        figimg, aximg = plt.subplots()
+        aximg.imshow(right_img, origin='upper', cmap='Blues')
+        aximg.imshow(left_img, origin='upper', alpha=0.5, cmap='Reds')
+        # aximg.imshow(disparity, origin='upper', cmap='gray', alpha=0.5)
+        aximg.set_title(f'L/src: {self.src.camera}_{self.src.cwl} Red -> R/dst: {self.dst.camera}_{self.dst.cwl} Blue \n {tvec}')
+
+        if self.v_alignment:
+            if tvec[1] < -0.05:
+                disparity = cv2.rotate(disparity, cv2.ROTATE_90_CLOCKWISE)
+            elif tvec[1] > 0.05:
+                disparity = cv2.rotate(disparity, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        else:
+            if tvec[0] > 0.05:
+                print('stop')
+                disparity = cv2.rotate(disparity, cv2.ROTATE_180)                
+        
+        # self.disparity = disparity
+        self.disparity = (disparity/16).astype(np.float32)
+
+        # show the disparityS
+        if ax is None:
+            # disp_roi = self.dst_rect_roi
+            # disp_crop = self.disparity[disp_roi['y']:disp_roi['y']+disp_roi['h'], disp_roi['x']:disp_roi['x']+disp_roi['w']]
+            fig, ax = plt.subplots()
+
+        disp_crop = self.disparity
+        disp = ax.imshow(disp_crop, origin='upper', cmap='gray')
+        ax.imshow(self.dst_rect, origin='upper', cmap='Reds', alpha=0.5)
+        im_ratio = disp_crop.shape[1]/disp_crop.shape[0]
+        cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)            
+        ax.set_title(f'{tvec[0] > 0.05} {self.dst.camera}: {self.dst.cwl} nm')
 
     def depth_from_disparity(self, ax: object=None) -> None:
         """Compute the 3D point cloud from the disparity map, Q matrix and 
         rectified projection matrices.
         """
+        # check disparity in correct format    
+        if self.disparity.dtype == np.int16:    
+            self.disparity = (self.disparity/16).astype(np.float32)
+
         self.points3D = cv2.reprojectImageTo3D(self.disparity, self.q_mtx, handleMissingValues=True)
+        
+        # set values at 10,000 to NaN
+        self.points3D[self.points3D==10000] = np.nan
+        
         self.depth = self.points3D[:,:,2]
-        if ax is not None:
-            depth_roi = self.dst_rect_roi
-            depth_crop = self.depth[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w']]
-            disp = ax.imshow(depth_crop, origin='upper', cmap='viridis')
-            im_ratio = depth_crop.shape[1]/depth_crop.shape[0]
-            cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)
-            ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
+
+        # show the depth map
+        if ax is None:
+            # depth_roi = self.dst_rect_roi
+            # depth_crop = self.depth[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w']]
+            fig, ax = plt.subplots()
+
+        depth_crop = self.depth
+        disp = ax.imshow(depth_crop, origin='upper', cmap='viridis') #, vmin=0.8*0.8, vmax=0.8*1.2)
+        im_ratio = depth_crop.shape[1]/depth_crop.shape[0]
+        cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)
+        ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
         # crop the points
-        self.points3D = self.points3D[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w'],:]
+        # self.points3D = self.points3D[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w'],:]
         return self.points3D    
             
     def find_fundamental_mtx(self, use_corners: bool=False) -> np.ndarray:
@@ -1425,12 +1542,27 @@ class StereoPair():
             self.dst_pts, self.dst_pt_dsc = self.find_features('destination', rectified)
         # find matches
         if (self.src_pt_dsc is not None and self.dst_pt_dsc is not None):
-            matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
+            print(f'# Source Points: {len(self.src_pts)}')
+            print(f'# Destination Points: {len(self.dst_pts)}')
+            
+            # matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+            matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
             GOOD_MATCH_PERCENT = 0.90              
             matches = list(matcher.match(self.src_pt_dsc, self.dst_pt_dsc, None))
             matches.sort(key=lambda x: x.distance, reverse=False)
             numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
             matches = matches[:numGoodMatches]    
+
+            # # BFMatcher with default params
+            # bf = cv2.BFMatcher()
+            # matches = bf.knnMatch(self.src_pt_dsc, self.dst_pt_dsc,k=2)
+            # # Apply ratio test
+            # good = []
+            # for m,n in matches:
+            #     if m.distance < 0.75*n.distance:
+            #         good.append([m])
+            # matches = good
+
         else:
             matches = []
 
@@ -1462,10 +1594,23 @@ class StereoPair():
             raise ValueError('View must be "source" or "destination"')
                 
         if img.dtype != np.uint8:
-            img = (img.round()/16).astype(np.uint8) # convert image to 8-bit
-        MAX_FEATURES = 500
-        orb = cv2.ORB_create(MAX_FEATURES)
-        points, descriptors = orb.detectAndCompute(img, None) # TODO allow for an actual mask to be applied, rather than just None
+            img = np.floor(img/16).astype(np.uint8)
+
+        # MAX_FEATURES = 1000
+        # orb = cv2.ORB_create(MAX_FEATURES)
+        # points, descriptors = orb.detectAndCompute(img, None) # TODO allow for an actual mask to be applied, rather than just None
+
+        # initiate SIFT detector
+        sift = cv2.SIFT_create(
+            nfeatures=0,
+            nOctaveLayers=3,
+            contrastThreshold=0.02,
+            edgeThreshold=10,
+            sigma=1.6            
+        )
+        # find the keypoints and descriptors with SIFT
+        points, descriptors = sift.detectAndCompute(img, None) # TODO allow for an actual mask to be applied, rather than just None
+
         return points, descriptors
 
     def draw_matches(self, ax: object=None, rectified: bool=False) -> None:
@@ -1475,9 +1620,10 @@ class StereoPair():
             src_img = self.src_rect
             dst_img = self.dst_rect
         else:
-            src_img = (self.src.img_ave.round()/16).astype(np.uint8)
-            dst_img = (self.dst.img_ave.round()/16).astype(np.uint8)
+            src_img = np.floor(self.src.img_ave/16).astype(np.uint8)            
+            dst_img = np.floor(self.dst.img_ave/16).astype(np.uint8)
         img = cv2.drawMatches(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
+        # img = cv2.drawMatchesKnn(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
         if ax is None:
             plt.imshow(img, origin='upper')            
             plt.show()
@@ -2108,6 +2254,20 @@ def plot_roi_reflectance(
 
     return results
 
+def set_roi_mask(smpl_imgs: Dict, threshold: int=None) -> Dict:
+    """Draw an ROI on each image, and set this as a mask.
+
+    :param smpl_imgs: Dictionary of Image objects for each channel
+    :type smpl_imgs: Dict
+    :return: Updated Image Objects with new ROI masks
+    :rtype: Dict
+    """    
+    channels = list(smpl_imgs.keys())
+    for channel in channels:
+        smpl = smpl_imgs[channel]
+        smpl.set_polyroi(threshold=threshold)
+    return smpl_imgs
+
 def build_session_directory(session_path: Path) -> Dict:
     """Build the session directory around the given session path.    
 
@@ -2243,6 +2403,15 @@ def build_scene_directory(
     # build the products directory
     prod_path = Path(scene_path, 'products')
     prod_path.mkdir(exist_ok=True)
+
+    # make a symlink to the camera_config.csv file
+    camera_config_path = Path(src_scene_path, '..', 'camera_config.csv')
+    if camera_config_path.exists():
+        camera_config_link = Path(scene_path, '..', 'camera_config.csv')
+        if not camera_config_link.exists():
+            camera_config_link.symlink_to(camera_config_path.resolve(), target_is_directory=False)
+    else:
+        raise ValueError(f'Camera config file does not exist: {camera_config_path}')
 
     return raw_path, dark_path
 
@@ -2386,3 +2555,17 @@ def apply_coalignment(smpl_imgs: Dict, coals: Dict, caption: Tuple[str, str]=Non
     show_grid(fig, ax)
     show_grid(fig1, ax1)
     return aligned_refl
+
+def export_images(smpl_imgs: Dict, uint8: bool=False) -> None:
+    """Export the image stack to tiff
+
+    :param smpl_imgs: _description_
+    :type smpl_imgs: Dict
+    :param uint8: _description_, defaults to False
+    :type uint8: bool, optional
+    """    
+    channels = list(smpl_imgs.keys())
+    for channel in channels:
+        smpl = smpl_imgs[channel]
+        smpl.save_tiff(uint8=uint8)
+        
