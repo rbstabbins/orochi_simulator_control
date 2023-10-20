@@ -9,7 +9,7 @@ import ctypes
 from datetime import date
 from pathlib import Path
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,6 +35,8 @@ class Channel:
         self.init_camera_stream()
         self.width, self.height, self.buffer_size, self.bpp = self.get_image_info()
         self.max_dn = None
+        self.session = None
+        self.scene = None
 
     def connect(self):
         """Connect the camera to the grabber.
@@ -65,6 +67,118 @@ class Channel:
         self.ic.IC_StartLive(self.grabber, 0)
         # self.ic.IC_MsgBox(tis.T("Camera Stream Check: Click OK to stop"), tis.T("Initialising Camera Feed"))
         self.ic.IC_StopLive(self.grabber)
+
+    def set_defaults(self, 
+                     bit_depth = 12,
+                     fps=30.0,
+                     black_level=4,
+                     gain=4.27,
+                     exposure=1.0/100, 
+                     auto_exposure=1):
+        """Set default properties for each camera.
+
+        :param exposure: exposure time (seconds), defaults to 1.0/100
+        :type exposure: float, optional
+        :param auto_exposure: AE activation flag, defaults to 1
+        :type auto_exposure: int, optional
+        :param black_level: black offset level, in 8-bit DN range, defaults to
+            26 (10% of the range, for linearity)
+        :type black_level: int, optional
+        """
+        # 8-bit
+        if bit_depth == 8:
+            vid_format = "Y800 (1920x1200)"
+            sink_format_id = 0
+        # 12-bit
+        if bit_depth == 12:
+            vid_format = "Y16 (1920x1200)"
+            sink_format_id = 4
+        ret = self.ic.IC_SetVideoFormat(self.grabber, tis.T(vid_format))
+        print(ret)
+        print(f'Video Format set to : {vid_format}')
+        ret = self.ic.IC_SetFormat(self.grabber, ctypes.c_int(sink_format_id))
+        print(ret)
+        print(f'Sink Format set to : "{tis.SinkFormats(sink_format_id)}"')        
+        # ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(fps))
+        # print(f'Frame Rate set to : {fps} FPS')
+        ret = self.set_frame_rate(fps)
+        self.init_camera_stream()
+        self.get_image_info()
+        # brightness is Black Level in DN for the 12-bit range of the detector.
+        # black_level = black_level*2**4 # convert from 8-bit to 12-bit
+        self.set_property('Brightness', 'Value', black_level, 'Range')
+        self.set_property('Contrast', 'Value', 0, 'Range')
+        self.set_property('Sharpness', 'Value', 0, 'Range')
+        self.set_property('Gamma', 'Value', 100, 'Range')
+        self.set_property('Gain', 'Value', gain, 'AbsoluteValue')
+        self.set_property('Gain', 'Auto', 0, 'Switch')
+        self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
+        self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
+        self.set_property('Exposure', 'Auto Reference', 80, 'Range')
+        self.set_property('Exposure', 'Auto Max Value', 10.0, 'AbsoluteValue')
+        self.set_property('Exposure', 'Auto Max Auto', 0, 'Switch')
+        self.set_property('Trigger', 'Enable', 0, 'Switch')
+        self.set_property('Denoise', 'Value', 0, 'Range')
+        self.set_property('Flip Horizontal', 'Enable', 0, 'Switch')
+        self.set_property('Flip Vertical', 'Enable', 0, 'Switch')
+        self.set_property('Highlight Reduction', 'Enable', 0, 'Switch')
+        self.set_property('Tone Mapping', 'Enable', 0, 'Switch')
+        self.set_property('Strobe', 'Enable', 0, 'Switch')
+        self.set_property('Auto Functions ROI', 'Enabled', 0, 'Switch')
+
+    def get_current_state(self):
+            """Get the current property values of the camera.
+            """
+            # Get image info
+            width, height, buffer_size, bpp = self.get_image_info()
+            print(f'Image size: {width} x {height} pixels')
+            print(f'Image buffer size: {buffer_size} bytes')
+            print(f'Bits per pixel: {bpp}')
+
+            # Get the frame rate and color mode
+            fmt = self.ic.IC_GetFormat(self.grabber)
+            try:
+                print(f'Color Format: {tis.SinkFormats(fmt)}')
+            except:
+                print(f'Color Format: {fmt}')
+            fr = self.ic.IC_GetFrameRate(self.grabber)
+            print(f'Frame Rate: {fr}')
+
+            # # get number of available formats
+            # vid_format_count = self.ic.IC_GetVideoFormatCount(self.grabber)
+            # print(f'Number of available formats: {vid_format_count}')
+
+            # for i in range(vid_format_count):
+            #     szFormatName = (ctypes.c_char*40)()
+            #     iSize = ctypes.c_int(39)
+            #     iIndex = ctypes.c_int(i)
+            #     ret = self.ic.IC_ListVideoFormatbyIndex(self.grabber, szFormatName, iSize, iIndex)
+            #     print(f'Video format by index {iIndex.value}: {szFormatName.value}')
+
+            # # get format
+            # vid_format_idx = ctypes.c_int(17)
+            # ret = self.ic.IC_GetVideoFormat(self.grabber, vid_format_idx)
+            # print(f'Video format: {ret} {vid_format_idx.value}')
+
+            self.get_property('Brightness', 'Value', 'Value', True)
+            self.get_property('Contrast', 'Value', 'Value', True)
+            self.get_property('Sharpness', 'Value', 'Value', True)
+            self.get_property('Gamma', 'Value', 'Value', True)
+            self.get_property('Gain', 'Value', 'AbsoluteValue', True)
+            self.get_property('Gain', 'Auto', 'Switch', True)
+            self.get_property('Exposure', 'Value', 'AbsoluteValue', True)
+            self.get_property('Exposure', 'Auto', 'Switch', True)
+            self.get_property('Exposure', 'Auto Reference', 'Value', True)
+            self.get_property('Exposure', 'Auto Max Value', 'AbsoluteValue', True)
+            self.get_property('Exposure', 'Auto Max Auto', 'Switch', True)
+            self.get_property('Trigger', 'Enable', 'Switch', True)
+            self.get_property('Denoise', 'Value', 'Value', True)
+            self.get_property('Flip Horizontal', 'Enable', 'Switch', True)
+            self.get_property('Flip Vertical', 'Enable', 'Switch', True)
+            self.get_property('Highlight Reduction', 'Enable', 'Switch', True)
+            self.get_property('Tone Mapping', 'Enable', 'Switch', True)
+            self.get_property('Strobe', 'Enable', 'Switch', True)
+            self.get_property('Auto Functions ROI', 'Enabled', 'Switch', True)
 
     def get_image_info(self) -> Tuple:
         """Get image info required for image capture
@@ -155,7 +269,7 @@ class Channel:
             raise ValueError(f'{property} {element} has no interface')
         else:
             raise ValueError(f'{property} {element} unidentified error')
-
+        
     def set_frame_rate(self, rate: float) -> int:
         print(f'Setting Frame Rate to : {rate} FPS')
         ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(rate)) # set frame rate to 30 FPS
@@ -167,64 +281,6 @@ class Channel:
     def set_exposure(self, exposure: float) -> int:
         self.set_property('Exposure', 'Auto', 0, 'Switch')
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
-
-    def set_defaults(self, 
-                     bit_depth = 12,
-                     fps=30.0,
-                     black_level=4,
-                     gain=4.27,
-                     exposure=1.0/100, 
-                     auto_exposure=1):
-        """Set default properties for each camera.
-
-        :param exposure: exposure time (seconds), defaults to 1.0/100
-        :type exposure: float, optional
-        :param auto_exposure: AE activation flag, defaults to 1
-        :type auto_exposure: int, optional
-        :param black_level: black offset level, in 8-bit DN range, defaults to
-            26 (10% of the range, for linearity)
-        :type black_level: int, optional
-        """
-        # 8-bit
-        if bit_depth == 8:
-            vid_format = "Y800 (1920x1200)"
-            sink_format_id = 0
-        # 12-bit
-        if bit_depth == 12:
-            vid_format = "Y16 (1920x1200)"
-            sink_format_id = 4
-        ret = self.ic.IC_SetVideoFormat(self.grabber, tis.T(vid_format))
-        print(ret)
-        print(f'Video Format set to : {vid_format}')
-        ret = self.ic.IC_SetFormat(self.grabber, ctypes.c_int(sink_format_id))
-        print(ret)
-        print(f'Sink Format set to : "{tis.SinkFormats(sink_format_id)}"')        
-        # ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(fps))
-        # print(f'Frame Rate set to : {fps} FPS')
-        ret = self.set_frame_rate(fps)
-        self.init_camera_stream()
-        self.get_image_info()
-        # brightness is Black Level in DN for the 12-bit range of the detector.
-        # black_level = black_level*2**4 # convert from 8-bit to 12-bit
-        self.set_property('Brightness', 'Value', black_level, 'Range')
-        self.set_property('Contrast', 'Value', 0, 'Range')
-        self.set_property('Sharpness', 'Value', 0, 'Range')
-        self.set_property('Gamma', 'Value', 100, 'Range')
-        self.set_property('Gain', 'Value', gain, 'AbsoluteValue')
-        self.set_property('Gain', 'Auto', 0, 'Switch')
-        self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
-        self.set_property('Exposure', 'Auto', auto_exposure, 'Switch')
-        self.set_property('Exposure', 'Auto Reference', 80, 'Range')
-        self.set_property('Exposure', 'Auto Max Value', 10.0, 'AbsoluteValue')
-        self.set_property('Exposure', 'Auto Max Auto', 0, 'Switch')
-        self.set_property('Trigger', 'Enable', 0, 'Switch')
-        self.set_property('Denoise', 'Value', 0, 'Range')
-        self.set_property('Flip Horizontal', 'Enable', 0, 'Switch')
-        self.set_property('Flip Vertical', 'Enable', 0, 'Switch')
-        self.set_property('Highlight Reduction', 'Enable', 0, 'Switch')
-        self.set_property('Tone Mapping', 'Enable', 0, 'Switch')
-        self.set_property('Strobe', 'Enable', 0, 'Switch')
-        self.set_property('Auto Functions ROI', 'Enabled', 0, 'Switch')
 
     def get_property(self, property: str, element: str, interface: str, print_state: bool=False):
         """Get the current value of a camera property."""
@@ -293,129 +349,6 @@ class Channel:
                                             container)
         t_exp = container.value
         return t_exp
-
-    def get_current_state(self):
-        """Get the current property values of the camera.
-        """
-        # Get image info
-        width, height, buffer_size, bpp = self.get_image_info()
-        print(f'Image size: {width} x {height} pixels')
-        print(f'Image buffer size: {buffer_size} bytes')
-        print(f'Bits per pixel: {bpp}')
-
-        # Get the frame rate and color mode
-        fmt = self.ic.IC_GetFormat(self.grabber)
-        try:
-            print(f'Color Format: {tis.SinkFormats(fmt)}')
-        except:
-            print(f'Color Format: {fmt}')
-        fr = self.ic.IC_GetFrameRate(self.grabber)
-        print(f'Frame Rate: {fr}')
-
-        # # get number of available formats
-        # vid_format_count = self.ic.IC_GetVideoFormatCount(self.grabber)
-        # print(f'Number of available formats: {vid_format_count}')
-
-        # for i in range(vid_format_count):
-        #     szFormatName = (ctypes.c_char*40)()
-        #     iSize = ctypes.c_int(39)
-        #     iIndex = ctypes.c_int(i)
-        #     ret = self.ic.IC_ListVideoFormatbyIndex(self.grabber, szFormatName, iSize, iIndex)
-        #     print(f'Video format by index {iIndex.value}: {szFormatName.value}')
-
-        # # get format
-        # vid_format_idx = ctypes.c_int(17)
-        # ret = self.ic.IC_GetVideoFormat(self.grabber, vid_format_idx)
-        # print(f'Video format: {ret} {vid_format_idx.value}')
-
-        self.get_property('Brightness', 'Value', 'Value', True)
-        self.get_property('Contrast', 'Value', 'Value', True)
-        self.get_property('Sharpness', 'Value', 'Value', True)
-        self.get_property('Gamma', 'Value', 'Value', True)
-        self.get_property('Gain', 'Value', 'AbsoluteValue', True)
-        self.get_property('Gain', 'Auto', 'Switch', True)
-        self.get_property('Exposure', 'Value', 'AbsoluteValue', True)
-        self.get_property('Exposure', 'Auto', 'Switch', True)
-        self.get_property('Exposure', 'Auto Reference', 'Value', True)
-        self.get_property('Exposure', 'Auto Max Value', 'AbsoluteValue', True)
-        self.get_property('Exposure', 'Auto Max Auto', 'Switch', True)
-        self.get_property('Trigger', 'Enable', 'Switch', True)
-        self.get_property('Denoise', 'Value', 'Value', True)
-        self.get_property('Flip Horizontal', 'Enable', 'Switch', True)
-        self.get_property('Flip Vertical', 'Enable', 'Switch', True)
-        self.get_property('Highlight Reduction', 'Enable', 'Switch', True)
-        self.get_property('Tone Mapping', 'Enable', 'Switch', True)
-        self.get_property('Strobe', 'Enable', 'Switch', True)
-        self.get_property('Auto Functions ROI', 'Enabled', 'Switch', True)
-
-    def image_capture(self, roi=False) -> np.ndarray:
-        """Capture a single image from the camera.
-
-        :param roi: Region of Interest mode, defaults to False
-        :type roi: bool, optional
-        :return: image data
-        :rtype: np.ndarray
-        """
-        # self.get_current_state()
-        exposure = self.get_exposure_value() # ensure that recorded exposure is correct
-        print(f'Imaging with Exposure: {exposure} s')
-        if exposure > 0.45:
-            self.set_frame_rate(1.0) # set frame rate to 1 fps if exposure is too long
-        self.ic.IC_StartLive(self.grabber,0)
-        wait_time = int(np.max([5.0, 2*exposure])*1E3) # time in ms to wait to receive frame
-        if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
-            # Get the image data
-            imagePtr = self.ic.IC_GetImagePtr(self.grabber)
-
-            imagedata = ctypes.cast(imagePtr,
-                                    ctypes.POINTER(ctypes.c_ubyte *
-                                                self.buffer_size))
-
-            # Create the numpy array
-            image = np.ndarray(buffer=imagedata.contents,
-                            dtype=np.uint8,
-                            shape=(self.height, self.width, self.bpp))
-
-            # convert to 16-bit
-
-            if self.bpp == 2:
-                image = image.astype(np.uint16)
-                image = (image[:,:,0] | image[:,:,1]<<8)
-                image = (image / 16).astype(np.uint16) # convert to 12-bit
-            elif self.bpp == 1:
-                image = image[:,:,0]
-            elif self.bpp == 3:
-                image = image[:,:,0]
-
-            if roi:
-                x = self.camera_props['roix']
-                y = self.camera_props['roiy']
-                w = self.camera_props['roiw']
-                h = self.camera_props['roih']
-                image = image[x:x+w,y:y+h]
-            print(f'+Good exposure {exposure} Image recieved')
-        else:
-            print(f'-Bad exposure {exposure} No image recieved in {wait_time} ms')
-            image = np.full([self.height, self.width], 1, dtype=np.uint16)
-            if roi:
-                x = self.camera_props['roix']
-                y = self.camera_props['roiy']
-                w = self.camera_props['roiw']
-                h = self.camera_props['roih']
-                image = image[x:x+w,y:y+h]
-        self.ic.IC_StopLive(self.grabber)
-        if exposure > 0.45:
-            self.set_frame_rate(30.0) # set frame rate back to 30 fps
-        return image
-
-    def show_image(self, img_arr, title):
-        # if the image is 16 bit, convert to 8 bit for display
-        fig, ax = plt.subplots(figsize=(5.8, 4.1))
-        disp = ax.imshow(img_arr, origin='lower')
-        ax.set_title(title)
-        plt.colorbar(disp, ax=ax)
-        plt.tight_layout()
-        plt.show()
 
     def find_exposure(self, init_t_exp=1.0/500, target=0.80, n_hot=10,
                       tol=1, limit=8, roi=True) -> float:
@@ -553,16 +486,126 @@ class Channel:
         title = f'Band {cam_num} ({self.name}) ROI Check: ROI'
         self.show_image(img, title)
 
-    def check_roi_uniformity(self) -> float:
+    def set_roi_manually(self, roi_size: int=None) -> None:
+        """Set the ROI of the given channel manually.
+        """        
+        channel_view = self.image_capture(roi=False)
+        # convert to 8-bit for cv2 view
+        if self.max_dn == 2**8 - 1:
+            channel_view = channel_view.astype(np.uint8)
+        elif self.max_dn == 2**12 - 2:
+            channel_view = (channel_view / 2**4).astype(np.uint8)
+
+        roi = cv2.selectROI(f'ROI Selection: {self.camera_props["number"]}_{int(self.camera_props["cwl"])}', channel_view, showCrosshair=True)
+
+        print(roi)
+        xlim = roi[1]
+        ylim = roi[0]
+        if roi_size is None:
+            roi_size = roi[2]
+        else:
+            print(f'Overwriting ROI size with specified value: {roi_size}')
+
+        # update the camera properties with the coodinates
+        self.camera_props['roix'] = xlim
+        self.camera_props['roiy'] = ylim
+        self.camera_props['roiw'] = roi_size
+        self.camera_props['roih'] = roi_size
+
+        cv2.destroyAllWindows()
+
+    def check_roi_uniformity(self, n: int=25, ax: object=None, histo_ax: object=None) -> float:
         # check the uniformity of the ROI
-        self.find_exposure(roi=True)
-        img, _ = self.image_capture_repeat(n=25, roi=True)
-        self.show_image(img, 'ROI Uniformity')
+        # self.find_exposure(roi=True)
+        img, _ = self.image_capture_repeat(n=n, roi=True)
+        self.show_image(img, f'{self.camera_props["number"]}_{self.camera_props["cwl"]}', ax=ax, histo_ax=histo_ax)
         mean = np.mean(img)
         std = np.std(img)
         print(f'ROI Uniformity: {100.0 * std / mean} %')
         return std / mean
-    
+  
+    def image_capture(self, roi=False) -> np.ndarray:
+        """Capture a single image from the camera.
+
+        :param roi: Region of Interest mode, defaults to False
+        :type roi: bool, optional
+        :return: image data
+        :rtype: np.ndarray
+        """
+        # self.get_current_state()
+        exposure = self.get_exposure_value() # ensure that recorded exposure is correct
+        print(f'Imaging with Exposure: {exposure} s')
+        if exposure > 0.45:
+            self.set_frame_rate(1.0) # set frame rate to 1 fps if exposure is too long
+        self.ic.IC_StartLive(self.grabber,0)
+        wait_time = int(np.max([5.0, 2*exposure])*1E3) # time in ms to wait to receive frame
+        if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
+            # Get the image data
+            imagePtr = self.ic.IC_GetImagePtr(self.grabber)
+
+            imagedata = ctypes.cast(imagePtr,
+                                    ctypes.POINTER(ctypes.c_ubyte *
+                                                self.buffer_size))
+
+            # Create the numpy array
+            image = np.ndarray(buffer=imagedata.contents,
+                            dtype=np.uint8,
+                            shape=(self.height, self.width, self.bpp))
+
+            # convert to 16-bit
+
+            if self.bpp == 2:
+                image = image.astype(np.uint16)
+                image = (image[:,:,0] | image[:,:,1]<<8)
+                image = (image / 16).astype(np.uint16) # convert to 12-bit
+            elif self.bpp == 1:
+                image = image[:,:,0]
+            elif self.bpp == 3:
+                image = image[:,:,0]
+
+            if roi:
+                x = self.camera_props['roix']
+                y = self.camera_props['roiy']
+                w = self.camera_props['roiw']
+                h = self.camera_props['roih']
+                image = image[x:x+w,y:y+h]
+            print(f'+Good exposure {exposure} Image recieved')
+        else:
+            print(f'-Bad exposure {exposure} No image recieved in {wait_time} ms')
+            image = np.full([self.height, self.width], 1, dtype=np.uint16)
+            if roi:
+                x = self.camera_props['roix']
+                y = self.camera_props['roiy']
+                w = self.camera_props['roiw']
+                h = self.camera_props['roih']
+                image = image[x:x+w,y:y+h]
+        self.ic.IC_StopLive(self.grabber)
+        if exposure > 0.45:
+            self.set_frame_rate(30.0) # set frame rate back to 30 fps
+        return image
+
+    def show_image(self, img_arr, title, ax: object=None, histo_ax: object=None):
+        # if the image is 16 bit, convert to 8 bit for display
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(5.8, 4.1))
+        disp = ax.imshow(img_arr, origin='upper')
+        ax.set_title(title)
+        im_ratio = img_arr.shape[0] / img_arr.shape[1]
+        cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio, label='DN')
+        # plt.show()
+
+        # add histogram
+        if histo_ax is not None:
+            counts, bins = np.histogram(img_arr[np.nonzero(np.isfinite(img_arr))], bins=128)
+            histo_ax.hist(bins[:-1], bins, weights=counts,
+                        label=f"{self.camera_props['number']}_{int(self.camera_props['cwl'])}",
+                        log=True, fill=False, stacked=True, histtype='step')
+            histo_ax.set_xlabel('DN')
+            # plt.tight_layout()
+            # histo_ax.legend()
+
+        # plt.tight_layout()
+
     def image_capture_repeat(self, n: int=25, 
                              roi: bool=True) -> Tuple[np.ndarray, np.ndarray]:
         """Capture n repeat images, and return the mean and standard deviation
@@ -583,53 +626,7 @@ class Channel:
         std = np.std(img_stk, axis=2)
         return mean, std
 
-    def simple_linearity_check(self, n_exp: int=50) -> None:
-        """Run a simple program to check linearity, by imaging the
-        reflectance calibration target at step exposures from minimum
-        up to saturation.
-
-        :param n_exp: number of exposure steps to use, defaults to 50
-        :type n_exp: int, optional
-        """
-        self.set_property('Exposure', 'Auto', 0, 'Switch')
-        # set the minimum exposure as initial
-        t_min = 6.5E-5
-        t_exp = t_min
-        # set the saturation limit
-        sat_limit = 200
-        mean = 0
-
-        t_exps = []
-        means = []
-        count = 0
-        factor = 2.0
-        while count < n_exp:
-            # set exposure
-            if t_exp < t_min:
-                t_exp = t_min
-            self.set_property('Exposure', 'Value', t_exp, 'AbsoluteValue', wait=1.0)
-            # capture image
-            img = self.image_capture(roi=True)
-            # get estimate of mean over target ROI
-            mean = np.mean(img)
-            print(f'Mean Signal: {mean} DN')
-            # record t_exp, record mean
-            t_exps.append(t_exp)
-            means.append(mean)
-            # set next exposure
-            t_exp = factor*t_exp
-            # update counter
-            if mean >=sat_limit:
-                factor = 0.9
-            count+=1
-        data = pd.DataFrame(data={'t_exp': t_exps, 'mean': means})
-        data.sort_values('t_exp', inplace=True)
-        data.plot('t_exp', 'mean', logx=True, logy=True)
-        plt.show()
-        data.plot('t_exp', 'mean')
-        plt.show()
-
-    def save_image(self, name, subject, img_type, img_arr):
+    def save_image(self, name, img_type, img_arr):
 
         exposure = self.get_property('Exposure', 'Value', 'AbsoluteValue') # note that this already ensures exposure is correct
         metadata={
@@ -641,7 +638,8 @@ class Channel:
             'f-length': self.camera_props['flength'],
             'exposure': f'{exposure:.16f}', # check that string conversion is sufficient precision
             'image-type': img_type, # image or dark frame or averaged stack
-            'subject': subject,
+            'session': self.session,
+            'scene': self.scene,
             'roix': self.camera_props['roix'],
             'roiy': self.camera_props['roiy'],
             'roiw': self.camera_props['roiw'],
@@ -649,7 +647,7 @@ class Channel:
         }
         cwl_str = str(int(self.camera_props['cwl']))
         channel = str(self.camera_props['number'])+'_'+cwl_str
-        subject_dir = Path('..', 'data', subject, channel)
+        subject_dir = Path('..', '..', 'data', 'sessions', self.session, self.scene, channel)
         subject_dir.mkdir(parents=True, exist_ok=True)
         filename = cwl_str+'_'+name+'_'+img_type
         img_file =str(Path(subject_dir, filename).with_suffix('.tif'))
@@ -657,6 +655,7 @@ class Channel:
         tiff.imwrite(img_file, img_arr, imagej=True, metadata=metadata)
         print(f'Image {name} written to {img_file}')
 
+# Camera Connection and Configuration
 def start_ic() -> object:
     """Access the tisgrabber library and load the DLL
 
@@ -674,13 +673,17 @@ def start_ic() -> object:
 
     return ic
 
-def load_camera_config() -> Dict:
+def load_camera_config(session_path: str=None) -> Dict:
     """Load the camera configuration file
 
     :return: dictionary of cameras and settings
     :rtype: Dict
     """
-    cameras = pd.read_csv('camera_config.csv', index_col=0)
+    if session_path is None:
+        camera_config_path = Path('camera_config.csv')
+    else:
+        camera_config_path = Path(session_path, 'camera_config.csv')
+    cameras = pd.read_csv(camera_config_path, index_col=0)
     cameras = cameras.T.astype({
         'number': 'int',
         'serial': str,
@@ -767,27 +770,6 @@ def configure_cameras(cameras: List, **kwargs) -> None:
         camera.get_current_state()
         print('-----------------------------------')
 
-def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
-    """Find the band number for each connected camera, and update the camera
-    properties dictionary.
-
-    :param connected_cameras: List of connected cameras, under serial number name
-    :type cameras: List
-    :param cameras: Camera properties dictionary
-    :type cameras: Dict
-    :return: Dictionary of camera properties, with serial number attached
-    :rtype: Dict
-    """
-    for camera in connected_cameras:
-        camera.ic.IC_StartLive(camera.grabber,1)
-        camera.ic.IC_MsgBox(tis.T('Find the band number by waving in front of each camera'), tis.T('Camera Configuration'))
-        camera.ic.IC_StopLive(camera.grabber,1)
-        band_number = input(prompt='Enter band number e.g. "3"')
-        band_label = f'Band{band_number}'
-        cameras[band_label]['serial'] = camera.name
-        cameras[camera.name] = cameras.pop(band_label)
-    return cameras
-
 def find_camera_rois(cameras: List, roi_size: int=128):
     """Find the ROI for each connected camera, and update the camera properties
 
@@ -806,45 +788,22 @@ def find_camera_rois(cameras: List, roi_size: int=128):
 
     export_camera_config(cameras)
 
-def export_camera_config(cameras: List):
-    """Export the camera properties to a csv file.
+def set_camera_rois(cameras: List, roi_size: int=None):
+    """Manually set the ROI for each connected camera, and update the camera 
+    properties
 
-    :param cameras: Connected cameras
+    :param cameras: List of connected cameras, under serial number name
     :type cameras: List
     """
-    cam_info = []
     for camera in cameras:
-        cam_props = list(camera.camera_props.values())
-        index = list(camera.camera_props.keys())
-        cam_info.append(pd.Series(cam_props, index = index, name = camera.name))
-    cam_df = pd.concat(cam_info, axis=1)
-    cam_df.sort_values('number', axis=1, ascending=True, inplace=True)
-    camera_file = 'camera_config.csv'
-    cam_df.to_csv(camera_file)
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num} ({camera.name})')
+        print('-----------------------------------')
+        camera.set_roi_manually(roi_size=roi_size)
+        print('-----------------------------------')
 
-def prepare_reflectance_calibration(ic):
-    title = 'Imaging Calibration Target'
-    msg = 'Check Calibration Target is in place'
-    ic.IC_MsgBox(tis.T(msg), tis.T(title))
-
-def prepare_geometric_calibration(ic):
-    title = 'Imaging Geometric Calibration Target'
-    msg = 'Check Geometric Calibration Target is in place'
-    ic.IC_MsgBox(tis.T(msg), tis.T(title))
-    msg = 'Check Lens Caps are removed'
-    ic.IC_MsgBox(tis.T(msg), tis.T(title))
-
-def prepare_sample_imaging(ic):
-    title = 'Imaging Sample'
-    msg = 'Check Sample is in place'
-    ic.IC_MsgBox(tis.T(msg), tis.T(title))
-    msg = 'Check Lens Caps are removed'
-    ic.IC_MsgBox(tis.T(msg), tis.T(title))
-
-def prepare_dark_acquisition(ic):
-    title = 'Dark Frame Acquisition'
-    msg = 'Check Lens Caps are in place'
-    ic.IC_MsgBox(tis.T(msg), tis.T(title))
+    export_camera_config(cameras)
 
 def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
                       tol=1, limit=10, roi=True) -> Dict:
@@ -865,39 +824,32 @@ def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
         print('-----------------------------------')
     return exposures
 
-def check_channel_roi_uniformity(cameras: List) -> None:
-    """Check the uniformity of the ROI for each camera.
+def set_channel_exposures(cameras: List, exposures: Union[float, Dict]) -> None:
+    """Set the exposure time for each camera.
 
-    :param cameras: List of connected camera objects
+    :param cameras: list of camera objects
     :type cameras: List
+    :param exposures: exposure time for each camera
+    :type exposures: Union[double, Dict]
     """
     for camera in cameras:
         cam_num = camera.number
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        camera.check_roi_uniformity()
+        if isinstance(exposures, float):
+            expo = exposures
+        else:
+            expo = exposures[camera.name]
+        camera.set_exposure(expo)
+        print(f'Exposure set to {expo} s')
         print('-----------------------------------')
 
-def check_channel_linearity(cameras: List, n_exp: int=50) -> None:
-    """Check the channel linearity.
-
-    :param cameras: List of connected camera objects
-    :type cameras: List
-    :param n_exp: Number of exposure steps to take, defaults to 50
-    :type n_exp: int, optional
-    """
-    for camera in cameras:
-        cam_num = camera.number
-        print('-----------------------------------')
-        print(f'Device {cam_num}')
-        print('-----------------------------------')
-        camera.simple_linearity_check(n_exp)
-        print('-----------------------------------')
-
-def capture_channel_images(cameras: List, exposures: Dict, subject: str='test',
+# Image Capture and Information Export
+def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None, 
+                           session: str='test_session', scene: str='test_scene',
                            img_type: str='img', repeats: int=1, roi=False,
-                           show_img: bool=False, save_img: bool=False) -> None:
+                           show_img: bool=False, save_img: bool=False, ax: object=None) -> None:
     """Capture a sequence of images from each camera.
 
     :param cameras: List of connected camera objects
@@ -917,22 +869,52 @@ def capture_channel_images(cameras: List, exposures: Dict, subject: str='test',
     :param save_img: Save image flag, defaults to False
     :type save_img: bool, optional
     """
-
+    # TODO handle grid plot in here rather than in outside scripts
     for camera in cameras:
         cam_num = camera.number
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        camera.set_property('Exposure', 'Value', exposures[camera.name], 'AbsoluteValue')
-        camera.set_property('Exposure', 'Auto', 0, 'Switch')
+        if isinstance(exposures, float):            
+            camera.set_exposure(exposures)
+        elif isinstance(exposures, dict):
+            camera.set_exposure(exposures[camera.name])
+        
+        camera.session = session # set the subject string
+        camera.scene = scene
         for i in range(repeats):
             img = camera.image_capture(roi=roi)
             if show_img:
-                title = f'Device {cam_num} {subject} #{i}'
-                camera.show_image(img, title)
+                title = f'Device {cam_num} {session} {scene} #{i}'
+                if ax is not None:
+                    this_ax = ax[cam_num]
+                    histo_ax = ax[8]
+                else:
+                    this_ax = None
+                    histo_ax = None
+                camera.show_image(img, title, ax=this_ax, histo_ax=histo_ax)
             if save_img:
-                camera.save_image(str(i), subject, img_type, img)
+                camera.save_image(str(i), img_type, img)
         print('-----------------------------------')
+
+def export_camera_config(cameras: List):
+    """Export the camera properties to a csv file.
+
+    :param cameras: Connected cameras
+    :type cameras: List
+    """
+    cam_info = []
+    for camera in cameras:
+        cam_props = list(camera.camera_props.values())
+        index = list(camera.camera_props.keys())
+        cam_info.append(pd.Series(cam_props, index = index, name = camera.name))
+        session = camera.session
+    cam_df = pd.concat(cam_info, axis=1)
+    cam_df.sort_values('number', axis=1, ascending=True, inplace=True)
+    subject_dir = Path('..', '..', 'data', 'sessions', session)
+    subject_dir.mkdir(parents=True, exist_ok=True)
+    camera_file = Path(subject_dir, 'camera_config.csv')
+    cam_df.to_csv(camera_file)
 
 def record_exposures(cameras, exposures, subject) -> None:
     for camera in cameras:
@@ -945,48 +927,13 @@ def record_exposures(cameras, exposures, subject) -> None:
                 t_exp = str(exposures[camera.name]) # set formatting
                 f.write(t_exp)
 
-def set_focus(cameras) -> None:
+# Camera Disconnection
+def disconnect_cameras(cameras: List) -> None:
     for camera in cameras:
-        cam_num = camera.number
-        print('-----------------------------------')
-        print(f'Device {cam_num}')
-        print('-----------------------------------')
-        camera.ic.IC_StartLive(camera.grabber, 1)
-        title = f'{cam_num} Focus Calibration'
-        msg = f'Adjust Focus for Device {cam_num}'
-        camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
-        camera.ic.IC_StopLive(camera.grabber)
-        print('-----------------------------------')
+        camera.ic.IC_ReleaseGrabber(camera.grabber)
+        print(f'Device {camera.number} ({camera.name}) disconnected')
 
-def check_f_numbers(cameras) -> None:
-    # check against first camera
-    camera = cameras[0]
-    cam_num = camera.number
-    print('-----------------------------------')
-    print(f'Device {cam_num}')
-    print('-----------------------------------')
-    t_exp_cali = camera.find_exposure(init_t_exp=1.0/16600, target=0.80, n_hot=10, tol=0.5, limit=10, roi=True)
-
-    # prepare histogram
-    fig, ax = plt.subplots(1,1)
-    for camera in cameras:
-        cam_num = camera.number
-        print('-----------------------------------')
-        print(f'Device {cam_num}')
-        print('-----------------------------------')
-        camera.set_property('Exposure', 'Value', t_exp_cali, 'AbsoluteValue')
-        camera.set_property('Exposure', 'Auto', 0, 'Switch')
-        img = camera.image_capture(roi=True)
-        # plot histogram
-        counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)
-        ax.hist(bins[:-1], bins, weights=counts,
-                      label=f'({cam_num})',
-                      log=True, fill=False, stacked=True, histtype='step')
-    # show legend
-    ax.legend()
-    plt.show()
-
-
+# Setting F-Number
 def set_f_numbers_by_exp(cameras) -> None:
     for camera in cameras:
         cam_num = camera.number
@@ -1060,6 +1007,31 @@ def set_f_numbers(cameras) -> None:
                 searching = False
         print('-----------------------------------')
 
+# Experimental Functions
+def prepare_reflectance_calibration(ic):
+    title = 'Imaging Calibration Target'
+    msg = 'Check Calibration Target is in place'
+    ic.IC_MsgBox(tis.T(msg), tis.T(title))
+
+def prepare_geometric_calibration(ic):
+    title = 'Imaging Geometric Calibration Target'
+    msg = 'Check Geometric Calibration Target is in place'
+    ic.IC_MsgBox(tis.T(msg), tis.T(title))
+    msg = 'Check Lens Caps are removed'
+    ic.IC_MsgBox(tis.T(msg), tis.T(title))
+
+def prepare_sample_imaging(ic):
+    title = 'Imaging Sample'
+    msg = 'Check Sample is in place'
+    ic.IC_MsgBox(tis.T(msg), tis.T(title))
+    msg = 'Check Lens Caps are removed'
+    ic.IC_MsgBox(tis.T(msg), tis.T(title))
+
+def prepare_dark_acquisition(ic):
+    title = 'Dark Frame Acquisition'
+    msg = 'Check Lens Caps are in place'
+    ic.IC_MsgBox(tis.T(msg), tis.T(title))
+
 def load_exposures(cameras, subject) -> Dict:
     subject_dir = Path('..', 'data', subject)
     channels = subject_dir.glob('*')
@@ -1073,10 +1045,87 @@ def load_exposures(cameras, subject) -> Dict:
             exposures[cam_name] = float(f.read())
     return exposures
 
-def disconnect_cameras(cameras: List) -> None:
+def check_channel_roi_uniformity(cameras: List, n: int=25, ax: object=None) -> None:
+    """Check the uniformity of the ROI for each camera.
+
+    :param cameras: List of connected camera objects
+    :type cameras: List
+    """
     for camera in cameras:
-        camera.ic.IC_ReleaseGrabber(camera.grabber)
-        print(f'Device {camera.number} ({camera.name}) disconnected')
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        if ax is not None:
+            this_ax = ax[cam_num]
+            histo_ax = ax[8]
+        else:
+            this_ax = None
+            histo_ax = None
+        camera.check_roi_uniformity(n=n, ax=this_ax, histo_ax=histo_ax)
+        print('-----------------------------------')
+
+def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
+    """Find the band number for each connected camera, and update the camera
+    properties dictionary.
+
+    :param connected_cameras: List of connected cameras, under serial number name
+    :type cameras: List
+    :param cameras: Camera properties dictionary
+    :type cameras: Dict
+    :return: Dictionary of camera properties, with serial number attached
+    :rtype: Dict
+    """
+    for camera in connected_cameras:
+        camera.ic.IC_StartLive(camera.grabber,1)
+        camera.ic.IC_MsgBox(tis.T('Find the band number by waving in front of each camera'), tis.T('Camera Configuration'))
+        camera.ic.IC_StopLive(camera.grabber,1)
+        band_number = input(prompt='Enter band number e.g. "3"')
+        band_label = f'Band{band_number}'
+        cameras[band_label]['serial'] = camera.name
+        cameras[camera.name] = cameras.pop(band_label)
+    return cameras
+
+def set_focus(cameras) -> None:
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        camera.ic.IC_StartLive(camera.grabber, 1)
+        title = f'{cam_num} Focus Calibration'
+        msg = f'Adjust Focus for Device {cam_num}'
+        camera.ic.IC_MsgBox(tis.T(msg), tis.T(title))
+        camera.ic.IC_StopLive(camera.grabber)
+        print('-----------------------------------')
+
+def check_f_numbers(cameras) -> None:
+    # check against first camera
+    camera = cameras[0]
+    cam_num = camera.number
+    print('-----------------------------------')
+    print(f'Device {cam_num}')
+    print('-----------------------------------')
+    t_exp_cali = camera.find_exposure(init_t_exp=1.0/16600, target=0.80, n_hot=10, tol=0.5, limit=10, roi=True)
+
+    # prepare histogram
+    fig, ax = plt.subplots(1,1)
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        camera.set_property('Exposure', 'Value', t_exp_cali, 'AbsoluteValue')
+        camera.set_property('Exposure', 'Auto', 0, 'Switch')
+        img = camera.image_capture(roi=True)
+        # plot histogram
+        counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)
+        ax.hist(bins[:-1], bins, weights=counts,
+                      label=f'({cam_num})',
+                      log=True, fill=False, stacked=True, histtype='step')
+    # show legend
+    ax.legend()
+    plt.show()
 
 class CallbackUserdata(ctypes.Structure):
     """ Example for user data passed to the callback function.
