@@ -514,10 +514,10 @@ class Channel:
 
         cv2.destroyAllWindows()
 
-    def check_roi_uniformity(self, ax: object=None, histo_ax: object=None) -> float:
+    def check_roi_uniformity(self, n: int=25, ax: object=None, histo_ax: object=None) -> float:
         # check the uniformity of the ROI
         # self.find_exposure(roi=True)
-        img, _ = self.image_capture_repeat(n=25, roi=True)
+        img, _ = self.image_capture_repeat(n=n, roi=True)
         self.show_image(img, f'{self.camera_props["number"]}_{self.camera_props["cwl"]}', ax=ax, histo_ax=histo_ax)
         mean = np.mean(img)
         std = np.std(img)
@@ -588,7 +588,7 @@ class Channel:
         # if the image is 16 bit, convert to 8 bit for display
         if ax is None:
             fig, ax = plt.subplots(figsize=(5.8, 4.1))
-        disp = ax.imshow(img_arr, origin='lower')
+        disp = ax.imshow(img_arr, origin='upper')
         ax.set_title(title)
         im_ratio = img_arr.shape[0] / img_arr.shape[1]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio, label='DN')
@@ -866,7 +866,7 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
     :param save_img: Save image flag, defaults to False
     :type save_img: bool, optional
     """
-
+    # TODO handle grid plot in here rather than in outside scripts
     for camera in cameras:
         cam_num = camera.number
         print('-----------------------------------')
@@ -885,9 +885,11 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
                 title = f'Device {cam_num} {session} {scene} #{i}'
                 if ax is not None:
                     this_ax = ax[cam_num]
+                    histo_ax = ax[8]
                 else:
                     this_ax = None
-                camera.show_image(img, title, ax=this_ax, histo_ax=ax[8])
+                    histo_ax = None
+                camera.show_image(img, title, ax=this_ax, histo_ax=histo_ax)
             if save_img:
                 camera.save_image(str(i), img_type, img)
         print('-----------------------------------')
@@ -1040,7 +1042,7 @@ def load_exposures(cameras, subject) -> Dict:
             exposures[cam_name] = float(f.read())
     return exposures
 
-def check_channel_roi_uniformity(cameras: List, ax: object=None) -> None:
+def check_channel_roi_uniformity(cameras: List, n: int=25, ax: object=None) -> None:
     """Check the uniformity of the ROI for each camera.
 
     :param cameras: List of connected camera objects
@@ -1057,7 +1059,7 @@ def check_channel_roi_uniformity(cameras: List, ax: object=None) -> None:
         else:
             this_ax = None
             histo_ax = None
-        camera.check_roi_uniformity(ax=this_ax, histo_ax=histo_ax)
+        camera.check_roi_uniformity(n=n, ax=this_ax, histo_ax=histo_ax)
         print('-----------------------------------')
 
 def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
