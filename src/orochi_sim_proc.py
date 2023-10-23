@@ -317,7 +317,6 @@ class Image:
         tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
         print(f'Error image written to {img_file}')
 
-
 class DarkImage(Image):
     """Class for handling Dark Images, inherits Image class.
     """
@@ -336,7 +335,6 @@ class DarkImage(Image):
         self.dark = np.mean(self.img_ave)
         self.dsnu = np.std(self.img_ave)
         return self.dark, self.dsnu
-
 
 class LightImage(Image):
     """Class for handling Light Images, inherits Image class."""
@@ -767,7 +765,7 @@ class GeoCalImage(Image):
         self.all_corners = None
         self.object_points = self.define_calibration_points()
         self.corner_points = self.find_corners()
-        self.mtx, self.dist, self.rvec, self.tvec = None, None, None, None
+        self.mtx, self.new_mtx, self.dist, self.rvec, self.tvec = None, None, None, None, None
         self.p_mtx = None
         self.calibration_error = None
         self.f_length = None
@@ -878,14 +876,27 @@ class GeoCalImage(Image):
         axis = np.float32([[1,0,0], [0,1,0], [0,0,-1]]).reshape(-1,3)
         axis *= self.chkrsize * 5 # default to 5 square axes
         img = np.floor(self.img_ave/16).astype(np.uint8)
+        
+        orig_img = img.copy()
+
         img = cv2.cvtColor(img,cv2.COLOR_GRAY2RGB)
+        orig_img = img.copy()
+
+        error = None
+
         if self.rvec is not None:
-            imgpts, jac = cv2.projectPoints(axis, self.rvec, self.tvec, self.mtx, self.dist)       
+            imgpts, jac = cv2.projectPoints(axis, self.rvec, self.tvec, self.mtx, self.dist)   
+
+            # check the error of the imgpts agains tthe corner_points
+            corner_pts_proj, jac = cv2.projectPoints(self.object_points, self.rvec, self.tvec, self.mtx, self.dist)   
+            error = cv2.norm(self.corner_points, corner_pts_proj, cv2.NORM_L2)/len(imgpts)
+
             # draw the axis on the image
             corner = tuple(self.corner_points[0].ravel().astype(np.uint16))
+            # undistort                        
             img = cv2.line(img, corner, tuple((imgpts[0].ravel()).astype(np.int64)), (255,0,0), 3)
             img = cv2.line(img, corner, tuple((imgpts[1].ravel()).astype(np.int64)), (0,255,0), 3)
-            img = cv2.line(img, corner, tuple((imgpts[2].ravel()).astype(np.int64)), (0,0,255), 3)
+            img = cv2.line(img, corner, tuple((imgpts[2].ravel()).astype(np.int64)), (0,0,255), 3)            
 
         if self.roi:
             img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
@@ -903,9 +914,12 @@ class GeoCalImage(Image):
             img = img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
 
         ax.imshow(img, origin='upper')        
+        ax.imshow(orig_img, origin='upper', cmap='Reds', alpha=0.5)        
         ax.set_title(f'{self.camera}: {self.cwl} nm')
         if ax is None:
             plt.show()
+
+        return error
 
     def camera_intrinsic_properties(self) -> None:
         """Get camera properties from the camera intinsic matrix
@@ -933,11 +947,13 @@ class GeoCalImage(Image):
     def calibrate_camera(self):
         # Calibrate the camera
         ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera([self.object_points], [self.corner_points], (self.width, self.height), None, None)
+        new_mtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (self.width, self.height), 1, (self.width, self.height))
         self.mtx = mtx
+        self.new_mtx = new_mtx
         self.dist = dist
         self.rvecs = rvecs
         self.tvecs = tvecs
-        return mtx, dist, rvecs, tvecs
+        return mtx, new_mtx, dist, rvecs, tvecs
 
 class StereoPair():
     def __init__(self, src_image: LightImage, dst_image: LightImage) -> None:
@@ -1034,7 +1050,7 @@ class StereoPair():
         # scene
         # fundamental matrix
         fmtx_path = Path(
-            self.scene_dir, 
+            self.scene_dir.parent.parent, 
             'calibration', 
             'stereo_pairs', 
             'fundamental_matrices',
@@ -1045,7 +1061,7 @@ class StereoPair():
         np.save(pair_fmtx_path.with_suffix('.npy').resolve(), self.f_mtx)
         # essential matrix
         emtx_path = Path(
-            self.scene_dir, 
+            self.scene_dir.parent.parent, 
             'calibration', 
             'stereo_pairs', 
             'fundamental_matrices',
@@ -2473,7 +2489,7 @@ def checkerboard_calibration(geocs: Dict, chkrbrd: Tuple, roi: bool=False, capti
         src = GeoCalImage(cali_src, chkrbrd=chkrbrd, roi=roi)
         # target_points = src.define_calibration_points()
         # found_points = src.find_corners()
-        src.show_corners(ax=ax[src.camera], corner_roi=True)
+        src.show_corners(ax=ax[src.camera], corner_roi=roi)
         corners[channel] = src
     show_grid(fig, ax)
     return corners
