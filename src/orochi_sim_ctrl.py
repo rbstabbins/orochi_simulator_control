@@ -680,7 +680,7 @@ def load_camera_config(session_path: str=None) -> Dict:
     :rtype: Dict
     """
     if session_path is None:
-        camera_config_path = Path('camera_config.csv')
+        camera_config_path = Path('..', '..', 'data', 'calibration', 'camera_config.csv')
     else:
         camera_config_path = Path(session_path, 'camera_config.csv')
     cameras = pd.read_csv(camera_config_path, index_col=0)
