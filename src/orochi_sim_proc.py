@@ -340,7 +340,7 @@ class LightImage(Image):
     """Class for handling Light Images, inherits Image class."""
     def __init__(self, subject: str, channel: str, img_type: str='img') -> None:
         Image.__init__(self,subject, channel, img_type)
-        self.mtx, self.dist = self.load_calibration()        
+        self.mtx, self.new_mtx, self.dist = self.load_calibration()        
         self.f_length = None
 
     def dark_subtract(self, dark_image: DarkImage) -> None:
@@ -366,6 +366,20 @@ class LightImage(Image):
             mtx = np.load(channel_mtx_path.resolve())
         else:
             mtx = None
+
+        # new intrinsic matrix
+        new_mtx_path = Path(
+                    self.scene_dir.parent.parent, 
+                    'calibration', 
+                    'channels', 
+                    'new_intrinsic_matrices',
+                    self.channel)
+        if new_mtx_path.exists():
+            channel_mtx_path = Path(new_mtx_path, self.channel+'_nu_imtx').with_suffix('.npy')
+            new_mtx = np.load(channel_mtx_path.resolve())
+        else:
+            new_mtx = None
+
         # distortion coefficients
         dist_path = Path(
                     self.scene_dir.parent.parent,
@@ -381,7 +395,7 @@ class LightImage(Image):
         
         # TODO flat fielding
 
-        return mtx, dist
+        return mtx, new_mtx, dist
     
     def calibration_values(self) -> Dict:
         # output the calibration values of focal length, principal point, and
@@ -784,6 +798,19 @@ class GeoCalImage(Image):
         channel_mtx_path = Path(mtx_path, self.channel+'_imtx').with_suffix('.csv')
         np.savetxt(channel_mtx_path.resolve(), self.mtx, delimiter=',')
         np.save(channel_mtx_path.with_suffix('.npy').resolve(), self.mtx)
+
+        # new intrinsic matrix
+        new_mtx_path = Path(
+                    self.scene_dir.parent.parent, 
+                    'calibration', 
+                    'channels', 
+                    'new_intrinsic_matrices',
+                    self.channel)
+        new_mtx_path.mkdir(parents=True, exist_ok=True)                    
+        channel_mtx_path = Path(new_mtx_path, self.channel+'_nu_imtx').with_suffix('.csv')
+        np.savetxt(channel_mtx_path.resolve(), self.new_mtx, delimiter=',')
+        np.save(channel_mtx_path.with_suffix('.npy').resolve(), self.new_mtx)
+
         # distortion coefficients
         dist_path = Path(
                     self.scene_dir.parent.parent,
@@ -965,6 +992,7 @@ class StereoPair():
         self.t_mtx = None
         self.f_mtx = None
         self.e_mtx = None
+        self.baseline = None
         self.src_pts = None
         self.src_pt_dsc = None
         self.dst_pts = None
@@ -1005,6 +1033,26 @@ class StereoPair():
         pair_tmtx_path = Path(tmtx_path, self.pair+'_tvec').with_suffix('.npy')
         self.t_mtx = np.load(pair_tmtx_path.resolve())
 
+        # essential matrix
+        emtx_path = Path(
+            self.src.scene_dir.parent.parent, 
+            'calibration', 
+            'stereo_pairs', 
+            'essential_matrices',
+            self.pair)                           
+        pair_emtx_path = Path(emtx_path, self.pair+'_emtx').with_suffix('.npy')
+        self.e_mtx = np.load(pair_emtx_path.resolve())
+
+        # fundamental matrix
+        fmtx_path = Path(
+            self.src.scene_dir.parent.parent, 
+            'calibration', 
+            'stereo_pairs', 
+            'fundamental_matrices',
+            self.pair)                           
+        pair_fmtx_path = Path(fmtx_path, self.pair+'_fmtx').with_suffix('.npy')
+        self.f_mtx = np.load(pair_fmtx_path.resolve())
+
     def calibration_values(self) -> Tuple:
         # rvecs
         rvec, _ = cv2.Rodrigues(self.r_mtx)
@@ -1013,6 +1061,8 @@ class StereoPair():
         tvec = self.t_mtx.T[0]
         # baseline
         baseline = np.sqrt(np.sum(tvec**2))
+
+        self.baseline = baseline
 
         return rvec, tvec, baseline
 
@@ -1064,7 +1114,7 @@ class StereoPair():
             self.scene_dir.parent.parent, 
             'calibration', 
             'stereo_pairs', 
-            'fundamental_matrices',
+            'essential_matrices',
             self.pair)
         emtx_path.mkdir(parents=True, exist_ok=True)                    
         pair_emtx_path = Path(emtx_path, self.pair+'_emtx').with_suffix('.csv')
@@ -1123,10 +1173,10 @@ class StereoPair():
         """    
             
         R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
-                self.src.mtx, self.src.dist,
-                self.dst.mtx, self.dst.dist,
+                self.src.new_mtx, self.src.dist,
+                self.dst.new_mtx, self.dst.dist,
                 (self.src.width, self.src.height),
-                self.r_mtx, self.t_mtx, alpha=-1, newImageSize=(0,0))
+                self.r_mtx, self.t_mtx, alpha=-1, newImageSize=(0,0), flags=cv2.CALIB_ZERO_DISPARITY)
         self.src_r = R1
         self.dst_r = R2
         self.src_p = P1
@@ -1136,11 +1186,11 @@ class StereoPair():
         self.v_alignment = self.dst_p[0,3] == 0.0            
         
         self.src_map1, self.src_map2 = cv2.initUndistortRectifyMap(
-            self.src.mtx, self.src.dist, self.src_r, self.src_p, 
+            self.src.new_mtx, self.src.dist, self.src_r, self.src_p, 
             (self.src.width, self.src.height), cv2.CV_32FC1)
         
         self.dst_map1, self.dst_map2 = cv2.initUndistortRectifyMap(
-            self.dst.mtx, self.dst.dist, self.dst_r, self.dst_p, 
+            self.dst.new_mtx, self.dst.dist, self.dst_r, self.dst_p, 
             (self.dst.width, self.dst.height), cv2.CV_32FC1)
         
         src_img = np.clip(np.floor(self.src.img_ave/16),0,255).astype(np.uint8)
@@ -1209,10 +1259,10 @@ class StereoPair():
             self.draw_epilines('dst')
 
         if self.src.camera == self.dst.camera:
-            ax.imshow(src_img, origin='upper')    
+            ax.imshow(src_img, origin='upper')
             ax.set_title(title)
         else:
-            ax.imshow(dst_img, origin='upper')    
+            ax.imshow(dst_img, origin='upper')
             ax.set_title(title)
 
     def find_rect_roi(self, rect_img: np.array) -> Dict:
@@ -1397,15 +1447,15 @@ class StereoPair():
             P1=8*block_size**2,
             P2=32*block_size**2)
         
-        self.stereoMatcher = matcher        
+        self.stereoMatcher = matcher
 
         disparity = matcher.compute(left_img, right_img)
 
-        figimg, aximg = plt.subplots()
-        aximg.imshow(right_img, origin='upper', cmap='Blues')
-        aximg.imshow(left_img, origin='upper', alpha=0.5, cmap='Reds')
-        # aximg.imshow(disparity, origin='upper', cmap='gray', alpha=0.5)
-        aximg.set_title(f'L/src: {self.src.camera}_{self.src.cwl} Red -> R/dst: {self.dst.camera}_{self.dst.cwl} Blue \n {tvec}')
+        # figimg, aximg = plt.subplots()
+        # aximg.imshow(right_img, origin='upper', cmap='Blues')
+        # aximg.imshow(left_img, origin='upper', alpha=0.5, cmap='Reds')
+        # # aximg.imshow(disparity, origin='upper', cmap='gray', alpha=0.5)
+        # aximg.set_title(f'L/src: {self.src.camera}_{self.src.cwl} Red -> R/dst: {self.dst.camera}_{self.dst.cwl} Blue \n {tvec}')
 
         if self.v_alignment:
             if tvec[1] < -0.05:
@@ -1427,7 +1477,7 @@ class StereoPair():
 
         disp_crop = self.disparity
         disp = ax.imshow(disp_crop, origin='upper', cmap='gray')
-        ax.imshow(self.dst_rect, origin='upper', cmap='Reds', alpha=0.5)
+        # ax.imshow(self.dst_rect, origin='upper', cmap='Reds', alpha=0.5)
         im_ratio = disp_crop.shape[1]/disp_crop.shape[0]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)            
         ax.set_title(f'{tvec[0] > 0.05} {self.dst.camera}: {self.dst.cwl} nm')
@@ -1453,13 +1503,33 @@ class StereoPair():
             # depth_crop = self.depth[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w']]
             fig, ax = plt.subplots()
 
-        depth_crop = self.depth
-        disp = ax.imshow(depth_crop, origin='upper', cmap='viridis') #, vmin=0.8*0.8, vmax=0.8*1.2)
-        im_ratio = depth_crop.shape[1]/depth_crop.shape[0]
+        # depth_crop = self.depth
+        # disp = ax.imshow(depth_crop, origin='upper', cmap='viridis') #, vmin=0.8*0.8, vmax=0.8*1.2)
+        # im_ratio = depth_crop.shape[1]/depth_crop.shape[0]
+        # cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)
+        # _, tvec, _ = self.calibration_values()
+        # tvec = np.round(tvec*10)/10
+        # ax.set_title(f'{tvec}') # '{self.dst.camera}: {self.dst.cwl} nm')
+        # # crop the points
+        # # self.points3D = self.points3D[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w'],:]
+
+        # show the point cloud as a scatter plot with depth as hue
+        # estimate the horizontal image size using the field of view and the maximum depth
+        max_depth = 1.0
+        hfov = 2*np.arctan(self.dst.width/(2*2133))
+        max_width = max_depth*np.tan(hfov/2)
+        vfov = 2*np.arctan(self.dst.height/(2*2133))
+        max_height = max_depth*np.tan(vfov/2)
+
+        disp = ax.scatter(self.points3D[:,:,0], self.points3D[:,:,1], c=self.depth, cmap='viridis', s=0.1)
+        im_ratio = self.depth.shape[1]/self.depth.shape[0]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)
-        ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
-        # crop the points
-        # self.points3D = self.points3D[depth_roi['y']:depth_roi['y']+depth_roi['h'], depth_roi['x']:depth_roi['x']+depth_roi['w'],:]
+        _, tvec, _ = self.calibration_values()
+        tvec = np.round(tvec*10)/10
+        ax.set_title(f'{tvec}') # '{self.dst.camera}: {self.dst.cwl} nm')
+        ax.set_xlim(-max_width, max_width)
+        ax.set_ylim(-max_height, max_height)
+
         return self.points3D    
             
     def find_fundamental_mtx(self, use_corners: bool=False) -> np.ndarray:
@@ -2340,7 +2410,13 @@ def build_calibration_directory(
     src_i_mtx_path = Path(src_cali_path, 'channels', 'intrinsic_matrices')
     if src_i_mtx_path.exists():
         if not i_mtx_path.exists():
-            i_mtx_path.symlink_to(src_i_mtx_path.resolve(), target_is_directory=True)    
+            i_mtx_path.symlink_to(src_i_mtx_path.resolve(), target_is_directory=True)   
+    # build a new intrinsic matrix directory - if there    
+    new_i_mtx_path = Path(session_dict['channel_cali_path'], 'new_intrinsic_matrices')
+    src_nu_i_mtx_path = Path(src_cali_path, 'channels', 'new_intrinsic_matrices')
+    if src_nu_i_mtx_path.exists():
+        if not new_i_mtx_path.exists():
+            new_i_mtx_path.symlink_to(src_nu_i_mtx_path.resolve(), target_is_directory=True)    
     # build a flat field directory and symlink to the calibration folder - if there
     flat_field_path = Path(session_dict['channel_cali_path'], 'flat_fields')
     src_flat_field_path = Path(src_cali_path, 'channels', 'flat_fields')
@@ -2364,9 +2440,24 @@ def build_calibration_directory(
         if not tvec_path.exists():
             tvec_path.symlink_to(src_tvec_path.resolve(), target_is_directory=True)
         # check that the path has been assigned the directory
+    # build a fundamental matrix directory and symlink to the calibration folder - if there
+    fmtx_path = Path(session_dict['stereo_cali_path'], 'fundamental_matrices')
+    src_fmtx_path = Path(src_cali_path, 'stereo_pairs', 'fundamental_matrices')
+    if src_fmtx_path.exists():
+        if not fmtx_path.exists():
+            fmtx_path.symlink_to(src_fmtx_path.resolve(), target_is_directory=True)
+        # check that the path has been assigned the directory
+    # build a essential matrix directory and symlink to the calibration folder - if there
+    emtx_path = Path(session_dict['stereo_cali_path'], 'essential_matrices')
+    src_emtx_path = Path(src_cali_path, 'stereo_pairs', 'essential_matrices')
+    if src_emtx_path.exists():
+        if not emtx_path.exists():
+            emtx_path.symlink_to(src_emtx_path.resolve(), target_is_directory=True)
+        # check that the path has been assigned the directory
 
     # update the path dictionary and return
     session_dict['i_mtx_path'] = i_mtx_path
+    session_dict['new_mtx_path'] = new_i_mtx_path
     session_dict['flat_field_path'] = flat_field_path
     session_dict['rmtx_path'] = rmtx_path
     session_dict['tvec_path'] = tvec_path
