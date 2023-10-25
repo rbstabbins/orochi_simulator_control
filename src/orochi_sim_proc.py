@@ -992,7 +992,7 @@ class StereoPair():
         self.t_mtx = None
         self.f_mtx = None
         self.e_mtx = None
-        self.baseline = None
+        self.rvec, self.tvec, self.baseline = None, None, None
         self.src_pts = None
         self.src_pt_dsc = None
         self.dst_pts = None
@@ -1001,6 +1001,7 @@ class StereoPair():
         self.matches = None
         self.stereo_err = None
         self.v_alignment = None
+        self.src_on_left = None
         self.src_r = None # move to light image property?
         self.dst_r = None # move to light image property?
         self.src_p = None # move to light image property?
@@ -1052,6 +1053,8 @@ class StereoPair():
             self.pair)                           
         pair_fmtx_path = Path(fmtx_path, self.pair+'_fmtx').with_suffix('.npy')
         self.f_mtx = np.load(pair_fmtx_path.resolve())
+
+        self.rvec, self.tvec, self.baseline = self.calibration_values()
 
     def calibration_values(self) -> Tuple:
         # rvecs
@@ -1166,168 +1169,6 @@ class StereoPair():
 
         return ret    
 
-    def rectify(self,ax: object=None, roi: bool=False, polyroi: bool=False) -> None:
-        """Rectify the source and destination images, using the camera
-        intrinsic matrices and distortion coefficients, and the stereo
-        pair rotation and translation vectors.
-        """    
-            
-        R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
-                self.src.new_mtx, self.src.dist,
-                self.dst.new_mtx, self.dst.dist,
-                (self.src.width, self.src.height),
-                self.r_mtx, self.t_mtx, alpha=-1, newImageSize=(0,0), flags=cv2.CALIB_ZERO_DISPARITY)
-        self.src_r = R1
-        self.dst_r = R2
-        self.src_p = P1
-        self.dst_p = P2
-        self.q_mtx = Q
-
-        self.v_alignment = self.dst_p[0,3] == 0.0            
-        
-        self.src_map1, self.src_map2 = cv2.initUndistortRectifyMap(
-            self.src.new_mtx, self.src.dist, self.src_r, self.src_p, 
-            (self.src.width, self.src.height), cv2.CV_32FC1)
-        
-        self.dst_map1, self.dst_map2 = cv2.initUndistortRectifyMap(
-            self.dst.new_mtx, self.dst.dist, self.dst_r, self.dst_p, 
-            (self.dst.width, self.dst.height), cv2.CV_32FC1)
-        
-        src_img = np.clip(np.floor(self.src.img_ave/16),0,255).astype(np.uint8)
-        # src_img = cv2.cvtColor(src_img,cv2.COLOR_GRAY2BGR)
-        dst_img = np.clip(np.floor(self.dst.img_ave/16),0,255).astype(np.uint8)
-        # dst_img = cv2.cvtColor(dst_img,cv2.COLOR_GRAY2BGR)        
-        
-        if polyroi:
-            # apply the poly roi mask
-            if self.src.polyroi is not None:                
-                src_img = src_img * self.src.polyroi
-            else:
-                print('Warning - no PolyROI defined for source image')
-            if self.dst.polyroi is not None:
-                dst_img = dst_img * self.dst.polyroi
-            else:
-                print('Warning - no PolyROI defined for destination image')
-
-        # set all pixels outside the roi to 0
-        if roi:
-            src_img[:self.src.roix,:] = 0
-            src_img[self.src.roix+self.src.roiw:,:] = 0
-            src_img[:,:self.src.roiy] = 0
-            src_img[:,self.src.roiy+self.src.roih:] = 0
-
-            dst_img[:self.dst.roix,:] = 0
-            dst_img[self.dst.roix+self.dst.roiw:,:] = 0
-            dst_img[:,:self.dst.roiy] = 0
-            dst_img[:,self.dst.roiy+self.dst.roih:] = 0
-        
-        src_img = cv2.remap(src_img, self.src_map1, self.src_map2, cv2.INTER_LINEAR)
-        dst_img = cv2.remap(dst_img, self.dst_map1, self.dst_map2, cv2.INTER_LINEAR)
-        
-        # if self.v_alignment:
-        #     src_img = cv2.rotate(src_img, cv2.ROTATE_90_CLOCKWISE)
-        #     dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_CLOCKWISE)        
-            
-        self.src_rect = src_img
-        self.dst_rect = dst_img
-
-
-        title = f'{self.dst.camera}: {self.dst.cwl} nm'
-
-        fig2, ax2 = plt.subplots(1,2)
-
-        if roi:
-            # find new ROIs for rectified images
-            # should probably really have a new rectified image class...
-            self.src_rect_roi = self.find_rect_roi(self.src_rect)     
-            self.dst_rect_roi = self.find_rect_roi(self.dst_rect)
-            src_img = src_img[self.src_rect_roi['y']:self.src_rect_roi['y']+self.src_rect_roi['h'], self.src_rect_roi['x']:self.src_rect_roi['x']+self.src_rect_roi['w']]
-            dst_img = dst_img[self.dst_rect_roi['y']:self.dst_rect_roi['y']+self.dst_rect_roi['h'], self.dst_rect_roi['x']:self.dst_rect_roi['x']+self.dst_rect_roi['w']]
-
-        ax2[0].imshow(dst_img, origin='upper')  
-        ax2[1].imshow(src_img, origin='upper')
-        ax2[0].set_title(self.dst.channel)
-        ax2[1].set_title(self.src.channel+' Stereo Err.: '+str(self.stereo_err))
-
-        h_lines = np.arange(0, src_img.shape[0], src_img.shape[0]/20) 
-        for h_line in h_lines:
-            ax2[0].axhline(y = h_line, color = 'r', linestyle = '-', lw=0.4)      
-            ax2[1].axhline(y = h_line, color = 'r', linestyle = '-', lw=0.4)      
-        fig2.show()
-
-        if self.dst_elines is not None:
-            self.draw_epilines('dst')
-
-        if self.src.camera == self.dst.camera:
-            ax.imshow(src_img, origin='upper')
-            ax.set_title(title)
-        else:
-            ax.imshow(dst_img, origin='upper')
-            ax.set_title(title)
-
-    def find_rect_roi(self, rect_img: np.array) -> Dict:
-        """Find the Region of Interest of the given rectified image
-
-        :return: _description_
-        :rtype: Dict
-        """ 
-        rect_roi = {}         
-
-        # to do need to balance the offset in the y direction so that the content is at matching epilines
-
-        if rect_img.max() != 0:
-            rect_roi['x'] = np.min(np.where(np.sum(rect_img, axis=0)>0))
-            rect_roi['y'] = np.min(np.where(np.sum(rect_img, axis=1)>0))
-            rect_roi['w'] = np.max(np.where(np.sum(rect_img, axis=0)>0)) - rect_roi['x']
-            rect_roi['h'] = np.max(np.where(np.sum(rect_img, axis=1)>0)) - rect_roi['y']
-        else:
-            rect_roi['x'] = 0
-            rect_roi['y'] = 0
-            rect_roi['w'] = rect_img.shape[1]
-            rect_roi['h'] = rect_img.shape[0]
-        return rect_roi 
-
-    def compute3D(self):
-        """Compute 3D point locations
-        """        
-
-        if len(self.src_pts) == 0:
-            # compute p_mtx
-            return None
-        if len(self.dst_pts) == 0:
-            # compute p_mtx
-            return None
-
-        try:
-            # src_pts = np.array([pt.pt for pt in self.src_pts]).T
-            # dst_pts = np.array([pt.pt for pt in self.dst_pts]).T
-            src_pts = np.array([self.src_pts[m.queryIdx].pt for m in self.matches]).T
-            dst_pts = np.array([self.dst_pts[m.trainIdx].pt for m in self.matches]).T
-        except:
-            print('stop')
-
-        points4D = cv2.triangulatePoints(
-                        self.src_p, 
-                        self.dst_p, 
-                        src_pts, 
-                        dst_pts)
-        points3D = cv2.convertPointsFromHomogeneous(points4D.T)        
-        self.points3D = points3D.squeeze()
-        return points3D
-
-    def plot_3D_points(self, ax: object=None):
-        x_pts = self.points3D[:,0]
-        y_pts = self.points3D[:,1]
-        z_pts = self.points3D[:,2]
-        if ax is None:
-            fig = plt.figure()
-            ax = plt.axes(projection='3d')
-        color = channel_cols(self.dst.camera)
-        ax.scatter3D(x_pts, y_pts, z_pts, color=color)
-        title = f'{self.dst.camera}: {self.dst.cwl} nm'
-        ax.set_title(title)
-        # TODO show the plot if the ax was none
-
     def compute_epilines(self, matrix_type: str='F') -> None:
         """Compute epilines for each camera in each corresponding image
         """        
@@ -1390,44 +1231,149 @@ class StereoPair():
             ax.imshow(img, origin='upper')
             ax.set_title(title)
 
+    def rectify(self,ax: object=None, roi: bool=False, polyroi: bool=False) -> None:
+        """Rectify the source and destination images, using the camera
+        intrinsic matrices and distortion coefficients, and the stereo
+        pair rotation and translation vectors.
+        """    
+            
+        R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
+                self.src.new_mtx, self.src.dist,
+                self.dst.new_mtx, self.dst.dist,
+                (self.src.width, self.src.height),
+                self.r_mtx, self.t_mtx, alpha=-1, newImageSize=(0,0)) #, flags=cv2.CALIB_ZERO_DISPARITY)
+        self.src_r = R1
+        self.dst_r = R2
+        self.src_p = P1
+        self.dst_p = P2
+        self.q_mtx = Q
+
+        # set vertical alignment flag
+        self.v_alignment = self.dst_p[0,3] == 0.0     
+
+        # set src on left flag - 'source' image must be to left of 'destination'
+        # image for disparity finding
+        if self.v_alignment:
+            if self.tvec[1] < -0.05:
+                self.src_on_left = True
+            else:
+                self.src_on_left = False
+        else:
+            if self.tvec[0] < -0.05:
+                self.src_on_left = True
+            else:
+                self.src_on_left = False
+        
+        self.src_map1, self.src_map2 = cv2.initUndistortRectifyMap(
+            self.src.new_mtx, self.src.dist, self.src_r, self.src_p, 
+            (self.src.width, self.src.height), cv2.CV_32FC1)
+        
+        self.dst_map1, self.dst_map2 = cv2.initUndistortRectifyMap(
+            self.dst.new_mtx, self.dst.dist, self.dst_r, self.dst_p, 
+            (self.dst.width, self.dst.height), cv2.CV_32FC1)
+        
+        src_img = np.clip(np.floor(self.src.img_ave/16),0,255).astype(np.uint8)        
+        dst_img = np.clip(np.floor(self.dst.img_ave/16),0,255).astype(np.uint8)        
+        
+        if polyroi:
+            # apply the poly roi mask
+            if self.src.polyroi is not None:                
+                src_img = src_img * self.src.polyroi
+            else:
+                print('Warning - no PolyROI defined for source image')
+            # if self.dst.polyroi is not None:
+            #     dst_img = dst_img * self.dst.polyroi
+            # else:
+            #     print('Warning - no PolyROI defined for destination image')
+
+        # set all pixels outside the roi to 0
+        if roi:
+            src_img[:self.src.roix,:] = 0
+            src_img[self.src.roix+self.src.roiw:,:] = 0
+            src_img[:,:self.src.roiy] = 0
+            src_img[:,self.src.roiy+self.src.roih:] = 0
+
+            dst_img[:self.dst.roix,:] = 0
+            dst_img[self.dst.roix+self.dst.roiw:,:] = 0
+            dst_img[:,:self.dst.roiy] = 0
+            dst_img[:,self.dst.roiy+self.dst.roih:] = 0
+        
+        src_img = cv2.remap(src_img, self.src_map1, self.src_map2, cv2.INTER_LINEAR)
+        dst_img = cv2.remap(dst_img, self.dst_map1, self.dst_map2, cv2.INTER_LINEAR)
+                 
+        self.src_rect = src_img
+        self.dst_rect = dst_img
+
+
+        title = f'{np.array2string(self.tvec, precision=2)} {self.dst.camera}: {self.dst.cwl} nm'
+        
+        if roi:
+            # find new ROIs for rectified images
+            # should probably really have a new rectified image class...
+            self.src_rect_roi = self.find_rect_roi(self.src_rect)     
+            self.dst_rect_roi = self.find_rect_roi(self.dst_rect)
+            src_img = src_img[self.src_rect_roi['y']:self.src_rect_roi['y']+self.src_rect_roi['h'], self.src_rect_roi['x']:self.src_rect_roi['x']+self.src_rect_roi['w']]
+            dst_img = dst_img[self.dst_rect_roi['y']:self.dst_rect_roi['y']+self.dst_rect_roi['h'], self.dst_rect_roi['x']:self.dst_rect_roi['x']+self.dst_rect_roi['w']]
+
+        if self.dst_elines is not None:
+            self.draw_epilines('dst')
+
+        if self.src.camera == self.dst.camera:
+            ax.imshow(self.src.img_ave, origin='upper')
+            ax.set_title(title)
+        else:
+            ax.imshow(src_img, origin='upper', cmap='Reds')
+            ax.imshow(dst_img, origin='upper', cmap='Blues', alpha=0.5)
+            ax.set_title(title)
+            if self.v_alignment:
+                v_lines = np.arange(0, src_img.shape[1], 32)
+                for v_line in v_lines:
+                    ax.axvline(x = v_line, color = 'k', linestyle = '-', lw=0.4)             
+            else:
+                h_lines = np.arange(0, src_img.shape[0], 32)
+                for h_line in h_lines:
+                    ax.axhline(y = h_line, color = 'k', linestyle = '-', lw=0.4)                    
+
     def compute_disparity(self, ax: object=None) -> None:
         """Compute a disparity map for the given image pair.
         """ 
         src_img = self.src_rect
         dst_img = self.dst_rect
         
-        # check which image is to left and which is to right via tvecs
-        _, tvec, _ = self.calibration_values()
-
-        # round tvec to nearest 0.1
-        tvec = np.round(tvec*10)/10
+        if self.v_alignment:
+            if self.tvec[1] < -0.05:
+                self.src_on_left = True
+            else:
+                self.src_on_left = False
+        else:
+            if self.tvec[0] < -0.05:
+                self.src_on_left = True
+            else:
+                self.src_on_left = False
 
         # check if images are above/below each other
         if self.v_alignment:
-            if tvec[1] < -0.05:
-                src_img = cv2.rotate(src_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-                dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            elif tvec[1] > 0.05:
-                src_img = cv2.rotate(src_img, cv2.ROTATE_90_CLOCKWISE)
-                dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_CLOCKWISE)
-        else:
-            if tvec[0] > 0.05:
-                src_img = cv2.rotate(src_img, cv2.ROTATE_180)
-                dst_img = cv2.rotate(dst_img, cv2.ROTATE_180)
+            src_img = cv2.rotate(src_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            dst_img = cv2.rotate(dst_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        if not self.src_on_left:
+            src_img = cv2.rotate(src_img, cv2.ROTATE_180)
+            dst_img = cv2.rotate(dst_img, cv2.ROTATE_180)
+            # src_img = cv2.flip(src_img, 1)
+            # dst_img = cv2.flip(dst_img, 1)
         left_img = src_img
         right_img = dst_img
         
         # estimate the disparity
         z_est = 0.8 # 0.8 m
-        f = self.src.mtx[0][0]
-        b = np.sqrt(np.sum(tvec**2))
-        d_max = np.round(f*b/(z_est*0.8)).astype(np.int16)
-        d_min = np.round(f*b/(z_est*1.2)).astype(np.int16)
+        f = self.src.new_mtx[0][0]
+        b = self.baseline
+        d_max = np.round(f*b/(z_est*0.85)).astype(np.int16)
+        d_min = np.round(f*b/(z_est*1.15)).astype(np.int16)
         d_range = (np.round((d_max-d_min)/16)*16).astype(np.int16)
 
         # StereoSGBM Parameters
         prefiltercap = 5 # 5 - 255
-        block_size = 5 # 1 - 255
+        block_size = 10 # 1 - 255
         min_disp = d_min # -128 - +128
         num_disp = d_range # 16 - 256 (divisble by 16)
         uniqRatio = 15 # 0 - 100
@@ -1451,20 +1397,11 @@ class StereoPair():
 
         disparity = matcher.compute(left_img, right_img)
 
-        # figimg, aximg = plt.subplots()
-        # aximg.imshow(right_img, origin='upper', cmap='Blues')
-        # aximg.imshow(left_img, origin='upper', alpha=0.5, cmap='Reds')
-        # # aximg.imshow(disparity, origin='upper', cmap='gray', alpha=0.5)
-        # aximg.set_title(f'L/src: {self.src.camera}_{self.src.cwl} Red -> R/dst: {self.dst.camera}_{self.dst.cwl} Blue \n {tvec}')
-
         if self.v_alignment:
-            if tvec[1] < -0.05:
-                disparity = cv2.rotate(disparity, cv2.ROTATE_90_CLOCKWISE)
-            elif tvec[1] > 0.05:
-                disparity = cv2.rotate(disparity, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        else:
-            if tvec[0] > 0.05:                
-                disparity = cv2.rotate(disparity, cv2.ROTATE_180)                
+            disparity = cv2.rotate(disparity, cv2.ROTATE_90_CLOCKWISE)
+        if not self.src_on_left:                
+            disparity = cv2.rotate(disparity, cv2.ROTATE_180)                
+            # disparity = cv2.flip(disparity, 1) 
         
         # self.disparity = disparity
         self.disparity = (disparity/16).astype(np.float32)
@@ -1480,22 +1417,32 @@ class StereoPair():
         # ax.imshow(self.dst_rect, origin='upper', cmap='Reds', alpha=0.5)
         im_ratio = disp_crop.shape[1]/disp_crop.shape[0]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)            
-        ax.set_title(f'{tvec[0] > 0.05} {self.dst.camera}: {self.dst.cwl} nm')
+        ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
 
-    def depth_from_disparity(self, ax: object=None) -> None:
+    def depth_from_disparity(self, ax: object=None, coalign_ax: object=None) -> None:
         """Compute the 3D point cloud from the disparity map, Q matrix and 
         rectified projection matrices.
         """
         # check disparity in correct format    
         if self.disparity.dtype == np.int16:    
             self.disparity = (self.disparity/16).astype(np.float32)
+        
+        # edit q matrix so that q_mtx[3,4] is always +ve (otherwise will be -ve if T_x is positive)
+        print(self.q_mtx)
+        if self.q_mtx[3,2] < 0:
+            self.q_mtx[3,2] = -self.q_mtx[3,2]
 
         self.points3D = cv2.reprojectImageTo3D(self.disparity, self.q_mtx, handleMissingValues=True)
         
         # set values at 10,000 to NaN
-        self.points3D[self.points3D==10000] = np.nan
+        self.points3D[self.points3D==10000] = np.nan     
         
         self.depth = self.points3D[:,:,2]
+
+        # flip the parity if needed VERY HACKY NEED A PROPER FIX IN THE Q-MATRIX
+        # if np.nanmax(self.depth) < 0:
+        #     self.depth = -self.depth
+        #     self.points3D = -self.points3D
 
         # show the depth map
         if ax is None:
@@ -1520,17 +1467,168 @@ class StereoPair():
         max_width = max_depth*np.tan(hfov/2)
         vfov = 2*np.arctan(self.dst.height/(2*2133))
         max_height = max_depth*np.tan(vfov/2)
+    
 
         disp = ax.scatter(self.points3D[:,:,0], self.points3D[:,:,1], c=self.depth, cmap='viridis', s=0.1)
+        # disp = ax.imshow(self.depth, origin='upper', cmap='viridis') #, vmin=0.8*0.8, vmax=0.8*1.2)
         im_ratio = self.depth.shape[1]/self.depth.shape[0]
+        # set the axes ratio according to the width and height        
+        ax.axes.set_aspect('equal')
+
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)
         _, tvec, _ = self.calibration_values()
         tvec = np.round(tvec*10)/10
         ax.set_title(f'{tvec}') # '{self.dst.camera}: {self.dst.cwl} nm')
-        ax.set_xlim(-max_width, max_width)
-        ax.set_ylim(-max_height, max_height)
+        ax.set_xlim(-0.5, 0.5)
+        ax.set_ylim(+0.4, -0.4)
+
+        if coalign_ax is not None:
+            coalign_ax.scatter(self.points3D[:,:,0], self.points3D[:,:,1], c=self.depth, cmap='viridis', s=0.01)
+            coalign_ax.set_xlim(-0.5, 0.5)
+            coalign_ax.set_ylim(+0.4, -0.4)
+            coalign_ax.axes.set_aspect('equal')
 
         return self.points3D    
+
+    def find_rect_roi(self, rect_img: np.array) -> Dict:
+        """Find the Region of Interest of the given rectified image
+
+        :return: _description_
+        :rtype: Dict
+        """ 
+        rect_roi = {}         
+
+        # to do need to balance the offset in the y direction so that the content is at matching epilines
+
+        if rect_img.max() != 0:
+            rect_roi['x'] = np.min(np.where(np.sum(rect_img, axis=0)>0))
+            rect_roi['y'] = np.min(np.where(np.sum(rect_img, axis=1)>0))
+            rect_roi['w'] = np.max(np.where(np.sum(rect_img, axis=0)>0)) - rect_roi['x']
+            rect_roi['h'] = np.max(np.where(np.sum(rect_img, axis=1)>0)) - rect_roi['y']
+        else:
+            rect_roi['x'] = 0
+            rect_roi['y'] = 0
+            rect_roi['w'] = rect_img.shape[1]
+            rect_roi['h'] = rect_img.shape[0]
+        return rect_roi 
+
+    def find_features(self, view: str, rectified: bool=False) -> tuple:
+        """Find feature points and descriptors in the source or destination image
+
+        :param view: 'source' or 'destination' iamge to perform search over
+        :type view: str
+        :param rectified: Whether to use the rectified image or not, defaults to False
+        :type rectified: bool, optional
+        :return: feature points and descriptors
+        :rtype: tuple
+        """        
+        if view == 'source':
+            if rectified:
+                img = self.src_rect
+            else:
+                img = self.src.img_ave
+        elif view == 'destination':
+            if rectified:
+                img = self.dst_rect
+            else:
+                img = self.dst.img_ave
+        else:
+            raise ValueError('View must be "source" or "destination"')
+                
+        if img.dtype != np.uint8:
+            img = np.floor(img/16).astype(np.uint8)
+
+        # MAX_FEATURES = 1000
+        # orb = cv2.ORB_create(MAX_FEATURES)
+        # points, descriptors = orb.detectAndCompute(img, None) # TODO allow for an actual mask to be applied, rather than just None
+
+        # initiate SIFT detector
+        sift = cv2.SIFT_create(
+            nfeatures=0,
+            nOctaveLayers=3,
+            contrastThreshold=0.02,
+            edgeThreshold=10,
+            sigma=1.6            
+        )
+        # find the keypoints and descriptors with SIFT
+        points, descriptors = sift.detectAndCompute(img, None) # TODO allow for an actual mask to be applied, rather than just None
+
+        return points, descriptors
+
+    def find_matches(self, use_corners: bool=False, rectified: bool=False) -> int:
+        """Find matching points in the source and destination images
+
+        :param use_corners: Use the corner points to find matches, defaults to False
+        :type use_corners: bool, optional
+        :return: Number of matching points
+        :rtype: int
+        """     
+        # find points and descriptors
+        if use_corners:
+            # use the corner points already found in the source and destination images during geometric calibration...
+            # but then, what are the descriptors for these points?
+            self.src_pts = self.src.corner_points
+            self.dst_pts = self.dst.corner_points
+            # self.src_pt_dsc = ???
+            # self.dst_pt_dsc = ???
+        else: # otherwise, perform new feature searches            
+            self.src_pts, self.src_pt_dsc = self.find_features('source', rectified)
+            self.dst_pts, self.dst_pt_dsc = self.find_features('destination', rectified)
+        # find matches
+        if (self.src_pt_dsc is not None and self.dst_pt_dsc is not None):
+            print(f'# Source Points: {len(self.src_pts)}')
+            print(f'# Destination Points: {len(self.dst_pts)}')
+            
+            # matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+            matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+            GOOD_MATCH_PERCENT = 0.90              
+            matches = list(matcher.match(self.src_pt_dsc, self.dst_pt_dsc, None))
+            matches.sort(key=lambda x: x.distance, reverse=False)
+            numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
+            matches = matches[:numGoodMatches]    
+
+            # # BFMatcher with default params
+            # bf = cv2.BFMatcher()
+            # matches = bf.knnMatch(self.src_pt_dsc, self.dst_pt_dsc,k=2)
+            # # Apply ratio test
+            # good = []
+            # for m,n in matches:
+            #     if m.distance < 0.75*n.distance:
+            #         good.append([m])
+            # matches = good
+
+        else:
+            matches = []
+
+        self.matches = matches
+
+        return len(matches)    
+
+    def draw_matches(self, ax: object=None, rectified: bool=False) -> None:
+        """Draw the matching points in the source and destination images
+        """       
+        if rectified:
+            src_img = self.src_rect
+            dst_img = self.dst_rect
+        else:
+            src_img = np.floor(self.src.img_ave/16).astype(np.uint8)            
+            dst_img = np.floor(self.dst.img_ave/16).astype(np.uint8)
+        img = cv2.drawMatches(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
+        # img = cv2.drawMatchesKnn(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
+        if ax is None:
+            plt.imshow(img, origin='upper')            
+            plt.show()
+        else:
+            ax.imshow(img, origin='upper')
+            ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
+
+    def find_homography(self) -> np.ndarray:
+        """Find the homography between the source and destination cameras
+
+        :return: Homography matrix
+        :rtype: np.ndarray
+        """        
+        pass
             
     def find_fundamental_mtx(self, use_corners: bool=False) -> np.ndarray:
         """Find the fundamental matrix between the source and destination
@@ -1606,128 +1704,46 @@ class StereoPair():
         self.e_mtx = E
         return E
 
-    def find_matches(self, use_corners: bool=False, rectified: bool=False) -> int:
-        """Find matching points in the source and destination images
-
-        :param use_corners: Use the corner points to find matches, defaults to False
-        :type use_corners: bool, optional
-        :return: Number of matching points
-        :rtype: int
-        """     
-        # find points and descriptors
-        if use_corners:
-            # use the corner points already found in the source and destination images during geometric calibration...
-            # but then, what are the descriptors for these points?
-            self.src_pts = self.src.corner_points
-            self.dst_pts = self.dst.corner_points
-            # self.src_pt_dsc = ???
-            # self.dst_pt_dsc = ???
-        else: # otherwise, perform new feature searches            
-            self.src_pts, self.src_pt_dsc = self.find_features('source', rectified)
-            self.dst_pts, self.dst_pt_dsc = self.find_features('destination', rectified)
-        # find matches
-        if (self.src_pt_dsc is not None and self.dst_pt_dsc is not None):
-            print(f'# Source Points: {len(self.src_pts)}')
-            print(f'# Destination Points: {len(self.dst_pts)}')
-            
-            # matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-            matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
-            GOOD_MATCH_PERCENT = 0.90              
-            matches = list(matcher.match(self.src_pt_dsc, self.dst_pt_dsc, None))
-            matches.sort(key=lambda x: x.distance, reverse=False)
-            numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
-            matches = matches[:numGoodMatches]    
-
-            # # BFMatcher with default params
-            # bf = cv2.BFMatcher()
-            # matches = bf.knnMatch(self.src_pt_dsc, self.dst_pt_dsc,k=2)
-            # # Apply ratio test
-            # good = []
-            # for m,n in matches:
-            #     if m.distance < 0.75*n.distance:
-            #         good.append([m])
-            # matches = good
-
-        else:
-            matches = []
-
-        self.matches = matches
-
-        return len(matches)    
-
-    def find_features(self, view: str, rectified: bool=False) -> tuple:
-        """Find feature points and descriptors in the source or destination image
-
-        :param view: 'source' or 'destination' iamge to perform search over
-        :type view: str
-        :param rectified: Whether to use the rectified image or not, defaults to False
-        :type rectified: bool, optional
-        :return: feature points and descriptors
-        :rtype: tuple
+    def compute3D(self):
+        """Compute 3D point locations
         """        
-        if view == 'source':
-            if rectified:
-                img = self.src_rect
-            else:
-                img = self.src.img_ave
-        elif view == 'destination':
-            if rectified:
-                img = self.dst_rect
-            else:
-                img = self.dst.img_ave
-        else:
-            raise ValueError('View must be "source" or "destination"')
-                
-        if img.dtype != np.uint8:
-            img = np.floor(img/16).astype(np.uint8)
 
-        # MAX_FEATURES = 1000
-        # orb = cv2.ORB_create(MAX_FEATURES)
-        # points, descriptors = orb.detectAndCompute(img, None) # TODO allow for an actual mask to be applied, rather than just None
+        if len(self.src_pts) == 0:
+            # compute p_mtx
+            return None
+        if len(self.dst_pts) == 0:
+            # compute p_mtx
+            return None
 
-        # initiate SIFT detector
-        sift = cv2.SIFT_create(
-            nfeatures=0,
-            nOctaveLayers=3,
-            contrastThreshold=0.02,
-            edgeThreshold=10,
-            sigma=1.6            
-        )
-        # find the keypoints and descriptors with SIFT
-        points, descriptors = sift.detectAndCompute(img, None) # TODO allow for an actual mask to be applied, rather than just None
+        try:
+            # src_pts = np.array([pt.pt for pt in self.src_pts]).T
+            # dst_pts = np.array([pt.pt for pt in self.dst_pts]).T
+            src_pts = np.array([self.src_pts[m.queryIdx].pt for m in self.matches]).T
+            dst_pts = np.array([self.dst_pts[m.trainIdx].pt for m in self.matches]).T
+        except:
+            print('stop')
 
-        return points, descriptors
+        points4D = cv2.triangulatePoints(
+                        self.src_p, 
+                        self.dst_p, 
+                        src_pts, 
+                        dst_pts)
+        points3D = cv2.convertPointsFromHomogeneous(points4D.T)        
+        self.points3D = points3D.squeeze()
+        return points3D
 
-    def draw_matches(self, ax: object=None, rectified: bool=False) -> None:
-        """Draw the matching points in the source and destination images
-        """       
-        if rectified:
-            src_img = self.src_rect
-            dst_img = self.dst_rect
-        else:
-            src_img = np.floor(self.src.img_ave/16).astype(np.uint8)            
-            dst_img = np.floor(self.dst.img_ave/16).astype(np.uint8)
-        img = cv2.drawMatches(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
-        # img = cv2.drawMatchesKnn(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
+    def plot_3D_points(self, ax: object=None):
+        x_pts = self.points3D[:,0]
+        y_pts = self.points3D[:,1]
+        z_pts = self.points3D[:,2]
         if ax is None:
-            plt.imshow(img, origin='upper')            
-            plt.show()
-        else:
-            ax.imshow(img, origin='upper')
-            ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
-
-    def find_homography(self) -> np.ndarray:
-        """Find the homography between the source and destination cameras
-
-        :return: Homography matrix
-        :rtype: np.ndarray
-        """        
-        pass
-
-    def compute_depth(self) -> None:
-        """Compute the depth of each pixel in the source and destination images
-        """        
-        pass
+            fig = plt.figure()
+            ax = plt.axes(projection='3d')
+        color = channel_cols(self.dst.camera)
+        ax.scatter3D(x_pts, y_pts, z_pts, color=color)
+        title = f'{self.dst.camera}: {self.dst.cwl} nm'
+        ax.set_title(title)
+        # TODO show the plot if the ax was none
 
 def grid_plot(title: str=None, projection: str=None):
     cam_ax = {}
