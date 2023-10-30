@@ -805,6 +805,40 @@ def set_camera_rois(cameras: List, roi_size: int=None):
 
     export_camera_config(cameras)
 
+def set_camera_session(cameras: List, session: str='test_session'):
+    """Set the session name for each camera.
+
+    :param cameras: List of connected cameras, under serial number name
+    :type cameras: List
+    :param session: Description of image subject, defaults to 'test'
+    :type session: str, optional
+    """
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num} ({camera.name})')
+        print('-----------------------------------')
+        camera.session = session
+        print(f'Session set to {session}')
+        print('-----------------------------------')
+
+def set_camera_scene(cameras: List, scene: str='test_scene'):
+    """Set the scene name for each camera.
+
+    :param cameras: List of connected cameras, under serial number name
+    :type cameras: List
+    :param scene: Description of image subject, defaults to 'test'
+    :type scene: str, optional
+    """
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num} ({camera.name})')
+        print('-----------------------------------')
+        camera.scene = scene
+        print(f'Scene set to {scene}')
+        print('-----------------------------------')
+
 def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
                       tol=1, limit=10, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
