@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 from roipoly import RoiPoly, MultiRoi
 import scipy
+from shutil import copytree, copy
 import tifffile as tiff
 from typing import Tuple, Dict
 import orochi_sim_ctrl as osc
@@ -153,6 +154,28 @@ class Image:
         self.img_std = self.img_std / self.exposure # assume exposure err. negl.
         self.units = 'DN/s'
 
+    def set_roi(self, threshold: int=None) -> None:
+        """Set a rectangular region of interest
+        """
+        if self.roi:
+            img = self.roi_image()
+        else:
+            img = self.img_ave    
+
+        # if not 8 bit convert for display
+        if img.dtype != np.uint8:
+            img = np.floor(img/16).astype(np.uint8)    
+
+        roi = cv2.selectROI(f'ROI Selection: {self.camera}_{self.cwl}', img, showCrosshair=True)
+
+        # update the ROI
+        self.roix = int(roi[1])
+        self.roiy = int(roi[0])
+        self.roiw = int(roi[3])
+        self.roih = int(roi[2])
+
+        cv2.destroyAllWindows()
+
     def set_polyroi(self, threshold: int=None) -> None:
         """Set an arbitrary polygon region of interest
         """
@@ -276,7 +299,7 @@ class Image:
         # TODO add histograms
         # TODO add method for standard deviation image
 
-    def save_tiff(self, uint8: bool=False):
+    def save_tiff(self, uint8: bool=False, uint16: bool=False):
         """Save the average and error images to TIF files"""
         # TODO update to control conversion to string, and ensure high precision for exposure time
         metadata={
@@ -300,22 +323,31 @@ class Image:
         product_dir = Path(str(self.dir).replace('raw', 'products'))
         product_dir.mkdir(parents=True, exist_ok=True)
         img_file =str(Path(product_dir, filename).with_suffix('.tif'))
-        # write camera properties to TIF using ImageJ metadata
-        out_img = self.img_ave # .astype(np.float32)
+        
+        # write camera properties to TIF using ImageJ metadata        
+        if self.roi:
+            out_img = self.roi_image(self.polyroi)
+            err_img = self.roi_std(self.polyroi)
+        else:
+            out_img = self.img_ave
+            err_img = self.img_std
+
         if uint8:
             # convert to 8-bit
-            out_img = np.floor(self.img_ave/16).astype(np.uint8)
+            out_img = np.floor(out_img/16).astype(np.uint8)
+        elif uint16:
+            # convert to 16-bit
+            out_img = np.floor(out_img).astype(np.uint16)
         tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
         print(f'Mean image written to {img_file}')
 
-        # error image
-        name = 'error'
-        filename = cwl_str+'_'+name+'_'+self.img_type
-        img_file =str(Path(product_dir, filename).with_suffix('.tif'))
-        # write camera properties to TIF using ImageJ metadata
-        out_img = self.img_std.astype(np.float32)
-        tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
-        print(f'Error image written to {img_file}')
+        # # error image
+        # name = 'error'
+        # filename = cwl_str+'_'+name+'_'+self.img_type
+        # img_file =str(Path(product_dir, filename).with_suffix('.tif'))
+        # # write camera properties to TIF using ImageJ metadata
+        # tiff.imwrite(img_file, err_img, imagej=True, metadata=metadata)
+        # print(f'Error image written to {img_file}')
 
 class DarkImage(Image):
     """Class for handling Dark Images, inherits Image class.
@@ -2420,25 +2452,37 @@ def build_calibration_directory(
     src_dist_path = Path(src_cali_path, 'channels', 'distortion_coefficients')
     if src_dist_path.exists():
         if not dist_path.exists():
-            dist_path.symlink_to(src_dist_path.resolve(), target_is_directory=True)    
+            try:
+                dist_path.symlink_to(src_dist_path.resolve(), target_is_directory=True)    
+            except OSError:
+                copytree(src_dist_path.resolve(), dist_path)
     # build an intrinsic matrix directory - if there    
     i_mtx_path = Path(session_dict['channel_cali_path'], 'intrinsic_matrices')
     src_i_mtx_path = Path(src_cali_path, 'channels', 'intrinsic_matrices')
     if src_i_mtx_path.exists():
         if not i_mtx_path.exists():
-            i_mtx_path.symlink_to(src_i_mtx_path.resolve(), target_is_directory=True)   
+            try:
+                i_mtx_path.symlink_to(src_i_mtx_path.resolve(), target_is_directory=True) 
+            except OSError:
+                copytree(src_i_mtx_path.resolve(), i_mtx_path)
     # build a new intrinsic matrix directory - if there    
     new_i_mtx_path = Path(session_dict['channel_cali_path'], 'new_intrinsic_matrices')
     src_nu_i_mtx_path = Path(src_cali_path, 'channels', 'new_intrinsic_matrices')
     if src_nu_i_mtx_path.exists():
         if not new_i_mtx_path.exists():
-            new_i_mtx_path.symlink_to(src_nu_i_mtx_path.resolve(), target_is_directory=True)    
+            try:
+                new_i_mtx_path.symlink_to(src_nu_i_mtx_path.resolve(), target_is_directory=True)    
+            except OSError:
+                copytree(src_nu_i_mtx_path.resolve(), new_i_mtx_path)
     # build a flat field directory and symlink to the calibration folder - if there
     flat_field_path = Path(session_dict['channel_cali_path'], 'flat_fields')
     src_flat_field_path = Path(src_cali_path, 'channels', 'flat_fields')
     if src_flat_field_path.exists():
         if not flat_field_path.exists():
-            flat_field_path.symlink_to(src_flat_field_path.resolve(), target_is_directory=True)
+            try:
+                flat_field_path.symlink_to(src_flat_field_path.resolve(), target_is_directory=True)
+            except OSError:
+                copytree(src_flat_field_path.resolve(), flat_field_path)
         # check that the path has been assigned the directory
 
     # stereo pairs
@@ -2447,28 +2491,40 @@ def build_calibration_directory(
     src_rmtx_path = Path(src_cali_path, 'stereo_pairs', 'rotation_matrices')
     if src_rmtx_path.exists():
         if not rmtx_path.exists():
-            rmtx_path.symlink_to(src_rmtx_path.resolve(), target_is_directory=True)
+            try:
+                rmtx_path.symlink_to(src_rmtx_path.resolve(), target_is_directory=True)
+            except OSError:
+                copytree(src_rmtx_path.resolve(), rmtx_path)
         # check that the path has been assigned the directory
     # build a translation vector directory and symlink to the calibration folder - if there
     tvec_path = Path(session_dict['stereo_cali_path'], 'translation_vectors')
     src_tvec_path = Path(src_cali_path, 'stereo_pairs', 'translation_vectors')
     if src_tvec_path.exists():
         if not tvec_path.exists():
-            tvec_path.symlink_to(src_tvec_path.resolve(), target_is_directory=True)
+            try:
+                tvec_path.symlink_to(src_tvec_path.resolve(), target_is_directory=True)
+            except OSError:
+                copytree(src_tvec_path.resolve(), tvec_path)
         # check that the path has been assigned the directory
     # build a fundamental matrix directory and symlink to the calibration folder - if there
     fmtx_path = Path(session_dict['stereo_cali_path'], 'fundamental_matrices')
     src_fmtx_path = Path(src_cali_path, 'stereo_pairs', 'fundamental_matrices')
     if src_fmtx_path.exists():
         if not fmtx_path.exists():
-            fmtx_path.symlink_to(src_fmtx_path.resolve(), target_is_directory=True)
+            try:
+                fmtx_path.symlink_to(src_fmtx_path.resolve(), target_is_directory=True)
+            except OSError:
+                copytree(src_fmtx_path.resolve(), fmtx_path)
         # check that the path has been assigned the directory
     # build a essential matrix directory and symlink to the calibration folder - if there
     emtx_path = Path(session_dict['stereo_cali_path'], 'essential_matrices')
     src_emtx_path = Path(src_cali_path, 'stereo_pairs', 'essential_matrices')
     if src_emtx_path.exists():
         if not emtx_path.exists():
-            emtx_path.symlink_to(src_emtx_path.resolve(), target_is_directory=True)
+            try:
+                emtx_path.symlink_to(src_emtx_path.resolve(), target_is_directory=True)
+            except OSError:
+                copytree(src_emtx_path.resolve(), emtx_path)
         # check that the path has been assigned the directory
 
     # update the path dictionary and return
@@ -2512,14 +2568,21 @@ def build_scene_directory(
     dark_path = Path(cali_channels_path, 'dark_frames')
     if src_dark_path.exists():
         if not dark_path.exists():
-            dark_path.symlink_to(src_dark_path.resolve(), target_is_directory=True)      
+            try:
+                dark_path.symlink_to(src_dark_path.resolve(), target_is_directory=True)    
+            except OSError:
+                copytree(src_dark_path.resolve(), dark_path)
+
     else:
         raise ValueError(f'Dark frame directory does not exist: {src_dark_path}')
     # build the raw data directory
     raw_path = Path(scene_path, 'raw')
     if src_scene_path.exists():
         if not raw_path.exists():
-            raw_path.symlink_to(src_scene_path.resolve(), target_is_directory=True)
+            try:
+                raw_path.symlink_to(src_scene_path.resolve(), target_is_directory=True)
+            except OSError:
+                copytree(src_scene_path.resolve(), raw_path)
     else:
         raise ValueError(f'Scene directory does not exist: {src_scene_path}')
     # build the products directory
@@ -2527,11 +2590,14 @@ def build_scene_directory(
     prod_path.mkdir(exist_ok=True)
 
     # make a symlink to the camera_config.csv file
-    camera_config_path = Path(src_scene_path, '..', 'camera_config.csv')
+    camera_config_path = Path(src_scene_path, '..', 'camera_config.csv').resolve()
     if camera_config_path.exists():
-        camera_config_link = Path(scene_path, '..', 'camera_config.csv')
+        camera_config_link = Path(scene_path, '..', '..', 'calibration', 'camera_config.csv').resolve()
         if not camera_config_link.exists():
-            camera_config_link.symlink_to(camera_config_path.resolve(), target_is_directory=False)
+            try:
+                camera_config_link.symlink_to(camera_config_path, target_is_directory=False)
+            except OSError:
+                copy(camera_config_path, camera_config_link)
     else:
         raise ValueError(f'Camera config file does not exist: {camera_config_path}')
 
@@ -2678,7 +2744,21 @@ def apply_coalignment(smpl_imgs: Dict, coals: Dict, caption: Tuple[str, str]=Non
     show_grid(fig1, ax1)
     return aligned_refl
 
-def export_images(smpl_imgs: Dict, uint8: bool=False) -> None:
+def set_channel_rois(smpl_imgs: Dict) -> Dict:
+    """Set the region of interest on each channel of the given set of channels.
+
+    :param smpl_imgs: Dictionary of LightImage objects
+    :type smpl_imgs: Dict
+    :return: Dictionary of LightImage objects
+    :rtype: Dict
+    """
+    channels = list(smpl_imgs.keys())
+    for channel in channels:
+        smpl = smpl_imgs[channel]
+        smpl.set_roi()
+    return smpl_imgs
+
+def export_images(smpl_imgs: Dict, uint8: bool=False, uint16: bool=False, roi: bool=False) -> None:
     """Export the image stack to tiff
 
     :param smpl_imgs: _description_
@@ -2689,5 +2769,6 @@ def export_images(smpl_imgs: Dict, uint8: bool=False) -> None:
     channels = list(smpl_imgs.keys())
     for channel in channels:
         smpl = smpl_imgs[channel]
-        smpl.save_tiff(uint8=uint8)
+        smpl.roi = roi
+        smpl.save_tiff(uint8=uint8, uint16=uint16)
         
