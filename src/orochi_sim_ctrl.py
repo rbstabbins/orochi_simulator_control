@@ -645,11 +645,12 @@ class Channel:
             'roiw': self.camera_props['roiw'],
             'roih': self.camera_props['roih']
         }
+        cam_num_str = str(self.camera_props['number'])
         cwl_str = str(int(self.camera_props['cwl']))
         channel = str(self.camera_props['number'])+'_'+cwl_str
         subject_dir = Path('..', '..', 'data', 'sessions', self.session, self.scene, channel)
         subject_dir.mkdir(parents=True, exist_ok=True)
-        filename = cwl_str+'_'+name+'_'+img_type
+        filename = cam_num_str+'_'+cwl_str+'_'+name+'_'+img_type
         img_file =str(Path(subject_dir, filename).with_suffix('.tif'))
         # write camera properties to TIF using ImageJ metadata
         tiff.imwrite(img_file, img_arr, imagej=True, metadata=metadata)
@@ -950,11 +951,11 @@ def export_camera_config(cameras: List):
     camera_file = Path(subject_dir, 'camera_config.csv')
     cam_df.to_csv(camera_file)
 
-def record_exposures(cameras, exposures, subject) -> None:
+def record_exposures(cameras, exposures) -> None:
     for camera in cameras:
         cwl_str = str(int(camera.camera_props['cwl']))
         channel = str(camera.camera_props['number'])+'_'+cwl_str
-        subject_dir = Path('..', 'data', subject, channel)
+        subject_dir = Path('..', '..', 'data', 'sessions', camera.session, camera.scene)
         subject_dir.mkdir(parents=True, exist_ok=True)
         filename = Path(subject_dir, 'exposure_seconds.txt')
         with open(filename, 'w') as f:

@@ -1786,11 +1786,11 @@ def grid_plot(title: str=None, projection: str=None):
     # TODO update this according to camera number
     cam_ax[2] = ax[0][0] # 400
     cam_ax[5] = ax[0][1] # 950
-    cam_ax[7] = ax[0][2] # 550
+    cam_ax[6] = ax[0][2] # 550
     cam_ax[4] = ax[1][0] # 735
     cam_ax[8] = ax[1][1] # Histogram
     cam_ax[0] = ax[1][2] # 850
-    cam_ax[6] = ax[2][0] # 650
+    cam_ax[7] = ax[2][0] # 650
     cam_ax[3] = ax[2][1] # 550
     cam_ax[1] = ax[2][2] # 475
     # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
@@ -2090,16 +2090,16 @@ def load_sample(
         channel = channel_path.name
         smpl = LightImage(scene_path, channel)
         smpl.image_load()
-        print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
-        dark_smpl = DarkImage(dark_path, channel)
-        dark_smpl.image_load()
+        # print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
+        # dark_smpl = DarkImage(dark_path, channel)
+        # dark_smpl.image_load()
         # Check exposure times are equal
         light_exp = smpl.exposure
-        dark_exp = dark_smpl.exposure
-        if light_exp != dark_exp:
-            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
-        # subtract the dark frame
-        smpl.dark_subtract(dark_smpl)
+        # dark_exp = dark_smpl.exposure
+        # if light_exp != dark_exp:
+        #     raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+        # # subtract the dark frame
+        # smpl.dark_subtract(dark_smpl)
         # show
         if display:
             smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
