@@ -18,6 +18,41 @@ from scipy.ndimage import gaussian_filter
 import tifffile as tiff
 import tisgrabber as tis
 
+# Log of default exposures for spectralon, sample, and checkerboard imaging
+
+INIT_EXPOSURES = {
+    'SPECTRALON': {
+        0: 1.0/500,
+        1: 1.0/500,
+        2: 1.0/500,
+        3: 1.0/500,
+        4: 1.0/500,
+        5: 1.0/500,
+        6: 1.0/500,
+        7: 1.0/500,
+    },
+    'SAMPLE': {
+        0: 1.0/500,
+        1: 1.0/500,
+        2: 1.0/500,
+        3: 1.0/500,
+        4: 1.0/500,
+        5: 1.0/500,
+        6: 1.0/500,
+        7: 1.0/500,
+    },
+    'CHECKERBOARD': {
+        0: 1.0/500,
+        1: 1.0/500,
+        2: 1.0/500,
+        3: 1.0/500,
+        4: 1.0/500,
+        5: 1.0/500,
+        6: 1.0/500,
+        7: 1.0/500,
+    }
+}
+
 class Channel:
     """Class for controlling a single camera channel.
     """
@@ -104,6 +139,12 @@ class Channel:
         ret = self.set_frame_rate(fps)
         self.init_camera_stream()
         self.get_image_info()
+
+        # If exposure keyword set, look up from INIT_EXPOSURES, and disable AE
+        if isinstance(exposure, str):
+            exposure = INIT_EXPOSURES[exposure][self.number]
+            auto_exposure = 0
+
         # brightness is Black Level in DN for the 12-bit range of the detector.
         # black_level = black_level*2**4 # convert from 8-bit to 12-bit
         self.set_property('Brightness', 'Value', black_level, 'Range')
@@ -848,18 +889,22 @@ def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
     :type cameras: List
     """
     exposures = {}
+
+
     for camera in cameras:
         cam_num = camera.number
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
+        if init_t_exp is 'CURRENT':
+            init_t_exp = camera.get_exposure_value()
         exposure = camera.find_exposure(init_t_exp, target, n_hot,
                       tol, limit, roi)
         exposures[camera.name] = exposure
         print('-----------------------------------')
     return exposures
 
-def set_channel_exposures(cameras: List, exposures: Union[float, Dict]) -> None:
+def set_channel_exposures(cameras: List, exposures: Union[float, Dict, str]) -> None:
     """Set the exposure time for each camera.
 
     :param cameras: list of camera objects
@@ -874,8 +919,10 @@ def set_channel_exposures(cameras: List, exposures: Union[float, Dict]) -> None:
         print('-----------------------------------')
         if isinstance(exposures, float):
             expo = exposures
-        else:
+        elif isinstance(exposures, dict):
             expo = exposures[camera.name]
+        elif isinstance(exposures, str):
+            expo = INIT_EXPOSURES[exposures][camera.number]
         camera.set_exposure(expo)
         print(f'Exposure set to {expo} s')
         print('-----------------------------------')
