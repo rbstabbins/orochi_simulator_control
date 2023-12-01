@@ -22,24 +22,34 @@ import tisgrabber as tis
 
 INIT_EXPOSURES = {
     'SPECTRALON': {
-        0: 1.0/500,
-        1: 1.0/500,
-        2: 1.0/500,
-        3: 1.0/500,
-        4: 1.0/500,
-        5: 1.0/500,
-        6: 1.0/500,
-        7: 1.0/500,
+        0: 0.102319,
+        1: 0.060068,
+        2: 0.245860,
+        3: 0.021409,
+        4: 0.014131,
+        5: 0.758746,
+        6: 0.018825,
+        7: 0.042371,
     },
     'SAMPLE': {
-        0: 1.0/500,
-        1: 1.0/500,
-        2: 1.0/500,
-        3: 1.0/500,
-        4: 1.0/500,
-        5: 1.0/500,
-        6: 1.0/500,
-        7: 1.0/500,
+        0: 0.700609,
+        1: 0.486726,
+        2: 1.955772,
+        3: 0.171937,
+        4: 0.107759,
+        5: 4.886415,
+        6: 0.146284,
+        7: 0.324944,
+    },
+    'SAMPLE-FIXEDLAMP': {
+        0: 0.538227,
+        1: 0.315676,
+        2: 1.237319,
+        3: 0.114834,
+        4: 0.072598,
+        5: 3.254072,
+        6: 0.093471,
+        7: 0.230196,
     },
     'CHECKERBOARD': {
         0: 1.0/500,
@@ -312,7 +322,7 @@ class Channel:
             raise ValueError(f'{property} {element} unidentified error')
         
     def set_frame_rate(self, rate: float) -> int:
-        print(f'Setting Frame Rate to : {rate} FPS')
+        # print(f'Setting Frame Rate to : {rate} FPS')
         ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(rate)) # set frame rate to 30 FPS
         print(f'set frame rate err: {ret}')
         set_rate = self.ic.IC_GetFrameRate(self.grabber)
@@ -462,7 +472,7 @@ class Channel:
             self.set_property('Exposure', 'Value', new_t_exp, 'AbsoluteValue')
             # check that the exposure has been set
             set_t_exp = self.get_exposure_value()
-            print(f'Exposure set to {set_t_exp} (err of {new_t_exp - set_t_exp}')
+            print(f'Exposure set to {set_t_exp:0.6f} (err of {new_t_exp - set_t_exp})')
             trial_n+=1 # increment the counter
             failure = trial_n > limit
 
@@ -575,7 +585,7 @@ class Channel:
         """
         # self.get_current_state()
         exposure = self.get_exposure_value() # ensure that recorded exposure is correct
-        print(f'Imaging with Exposure: {exposure} s')
+        print(f'Imaging with Exposure: {exposure:0.6f} s')
         if exposure > 0.45:
             self.set_frame_rate(1.0) # set frame rate to 1 fps if exposure is too long
         self.ic.IC_StartLive(self.grabber,0)
@@ -610,7 +620,7 @@ class Channel:
                 w = self.camera_props['roiw']
                 h = self.camera_props['roih']
                 image = image[x:x+w,y:y+h]
-            print(f'+Good exposure {exposure} Image recieved')
+            # print(f'+Good exposure {exposure} Image recieved')
         else:
             print(f'-Bad exposure {exposure} No image recieved in {wait_time} ms')
             image = np.full([self.height, self.width], 1, dtype=np.uint16)
@@ -882,7 +892,7 @@ def set_camera_scene(cameras: List, scene: str='test_scene'):
         print('-----------------------------------')
 
 def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
-                      tol=1, limit=10, roi=True) -> Dict:
+                      tol=5, limit=16, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
 
     :param cameras: list of camera objects
@@ -896,7 +906,7 @@ def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        if init_t_exp is 'CURRENT':
+        if init_t_exp == 'CURRENT':
             init_t_exp = camera.get_exposure_value()
         exposure = camera.find_exposure(init_t_exp, target, n_hot,
                       tol, limit, roi)
@@ -961,6 +971,9 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
             camera.set_exposure(exposures)
         elif isinstance(exposures, dict):
             camera.set_exposure(exposures[camera.name])
+        elif exposures == 'CURRENT':
+            # do nothing - exposures are set
+            pass
         
         camera.session = session # set the subject string
         camera.scene = scene
