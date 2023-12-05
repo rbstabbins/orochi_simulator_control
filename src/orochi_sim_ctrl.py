@@ -639,8 +639,10 @@ class Channel:
         # if the image is 16 bit, convert to 8 bit for display
         if ax is None:
             fig, ax = plt.subplots(figsize=(5.8, 4.1))
+            ax.set_title(title)
+        else:
+            ax.set_title(f"{self.camera_props['number']}_{int(self.camera_props['cwl'])} {self.get_exposure_value():.4f} s")
         disp = ax.imshow(img_arr, origin='upper')
-        ax.set_title(title)
         im_ratio = img_arr.shape[0] / img_arr.shape[1]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio, label='DN')
         # plt.show()
@@ -838,7 +840,7 @@ def find_camera_rois(cameras: List, roi_size: int=128):
         camera.find_roi(roi_size)
         print('-----------------------------------')
 
-    export_camera_config(cameras)
+    # export_camera_config(cameras)
 
 def set_camera_rois(cameras: List, roi_size: int=None):
     """Manually set the ROI for each connected camera, and update the camera 
@@ -855,7 +857,7 @@ def set_camera_rois(cameras: List, roi_size: int=None):
         camera.set_roi_manually(roi_size=roi_size)
         print('-----------------------------------')
 
-    export_camera_config(cameras)
+    # export_camera_config(cameras)
 
 def set_camera_session(cameras: List, session: str='test_session'):
     """Set the session name for each camera.
@@ -1004,23 +1006,29 @@ def export_camera_config(cameras: List):
         index = list(camera.camera_props.keys())
         cam_info.append(pd.Series(cam_props, index = index, name = camera.name))
         session = camera.session
+        scene = camera.scene
     cam_df = pd.concat(cam_info, axis=1)
     cam_df.sort_values('number', axis=1, ascending=True, inplace=True)
-    subject_dir = Path('..', '..', 'data', 'sessions', session)
+    subject_dir = Path('..', '..', 'data', 'sessions', session, scene)
     subject_dir.mkdir(parents=True, exist_ok=True)
     camera_file = Path(subject_dir, 'camera_config.csv')
     cam_df.to_csv(camera_file)
 
-def record_exposures(cameras, exposures) -> None:
-    for camera in cameras:
-        cwl_str = str(int(camera.camera_props['cwl']))
-        channel = str(camera.camera_props['number'])+'_'+cwl_str
-        subject_dir = Path('..', '..', 'data', 'sessions', camera.session, camera.scene)
-        subject_dir.mkdir(parents=True, exist_ok=True)
-        filename = Path(subject_dir, 'exposure_seconds.txt')
-        with open(filename, 'w') as f:
+def record_exposures(cameras, exposures=None) -> None:
+    subject_dir = Path('..', '..', 'data', 'sessions', cameras[0].session, cameras[0].scene)
+    subject_dir.mkdir(parents=True, exist_ok=True)
+    filename = Path(subject_dir, 'exposure_seconds.txt')
+    with open(filename, 'w') as f:
+        for camera in cameras:
+            cwl_str = str(int(camera.camera_props['cwl']))
+            channel = str(camera.camera_props['number'])+'_'+cwl_str
+            # get the exposure
+            if exposures is None:
+                t_exp = str(camera.get_exposure_value()) # set formatting
+                camera.get_exposure_value()
+            else:
                 t_exp = str(exposures[camera.name]) # set formatting
-                f.write(t_exp)
+            f.write(f'{channel}, {t_exp} \n')
 
 # Camera Disconnection
 def disconnect_cameras(cameras: List) -> None:
