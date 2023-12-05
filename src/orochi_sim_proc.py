@@ -6,6 +6,7 @@ Rikkyo University
 """
 from pathlib import Path
 import os
+import astropy.io.fits as fitsio
 from collections import OrderedDict
 import cv2
 # import dict2xml
@@ -176,11 +177,11 @@ class Image:
 
         cv2.destroyAllWindows()
 
-    def set_polyroi(self, threshold: int=None) -> None:
+    def set_polyroi(self, threshold: int=None, roi: bool=False) -> None:
         """Set an arbitrary polygon region of interest
         """
 
-        if self.roi:
+        if self.roi or roi:
             img = self.roi_image()
         else:
             img = self.img_ave
@@ -302,6 +303,8 @@ class Image:
     def save_tiff(self, uint8: bool=False, uint16: bool=False):
         """Save the average and error images to TIF files"""
         # TODO update to control conversion to string, and ensure high precision for exposure time
+
+        # prepare metadata
         metadata={
             'subject': self.subject,
             'image-type': self.img_type,
@@ -316,15 +319,19 @@ class Image:
             'n_imgs': self.n_imgs
         }
         cwl_str = str(int(self.cwl))
+        cam_num = str(self.camera)
         print(self.dir)
-        # average image
+
+        # prepare filename and output directory
         name = 'mean'
-        filename = cwl_str+'_'+name+'_'+self.img_type
-        product_dir = Path(str(self.dir).replace('raw', 'products'))
+        filename = cam_num+'_'+cwl_str+'_'+name+'_'+self.img_type
+        product_dir = Path(self.dir.parent, 'products')
         product_dir.mkdir(parents=True, exist_ok=True)
-        img_file =str(Path(product_dir, filename).with_suffix('.tif'))
+        tiffs_dir = Path(product_dir, 'tiffs')
+        fits_dir = Path(product_dir, 'fits')
+        tiffs_dir.mkdir(parents=True, exist_ok=True)
+        fits_dir.mkdir(parents=True, exist_ok=True)
         
-        # write camera properties to TIF using ImageJ metadata        
         if self.roi:
             out_img = self.roi_image(self.polyroi)
             err_img = self.roi_std(self.polyroi)
@@ -332,22 +339,72 @@ class Image:
             out_img = self.img_ave
             err_img = self.img_std
 
+        out_img = np.clip(out_img, 0.0, None) # clip to ensure non-negative
+
         if uint8:
             # convert to 8-bit
             out_img = np.floor(out_img/16).astype(np.uint8)
         elif uint16:
             # convert to 16-bit
             out_img = np.floor(out_img).astype(np.uint16)
+
+        # write camera properties to TIF using ImageJ metadata        
+        out_img = out_img.astype(np.float32) # set data type to float 32
+        img_file =str(Path(tiffs_dir, filename).with_suffix('.tif'))
         tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
         print(f'Mean image written to {img_file}')
 
-        # # error image
-        # name = 'error'
-        # filename = cwl_str+'_'+name+'_'+self.img_type
-        # img_file =str(Path(product_dir, filename).with_suffix('.tif'))
-        # # write camera properties to TIF using ImageJ metadata
-        # tiff.imwrite(img_file, err_img, imagej=True, metadata=metadata)
-        # print(f'Error image written to {img_file}')
+        # if FITS is true, save to FITs file also
+        img_file =str(Path(fits_dir, filename).with_suffix('.fits'))
+
+        hdu = fitsio.PrimaryHDU(out_img)
+        hdu.header['subject'] = self.subject
+        hdu.header['type'] = self.img_type
+        hdu.header['camera'] = int(self.camera)
+        hdu.header['serial'] = int(self.serial)
+        hdu.header['cwl'] = self.cwl
+        hdu.header['fwhm'] = self.fwhm
+        hdu.header['f-number'] = self.fnumber
+        hdu.header['f-length'] = self.flength
+        hdu.header['exposure'] = self.exposure
+        hdu.header['units'] = self.units
+        hdu.writeto(img_file, overwrite=True)
+
+        # error image
+        name = 'error'
+        filename = cam_num+'_'+cwl_str+'_'+name+'_'+self.img_type
+        img_file =str(Path(tiffs_dir, filename).with_suffix('.tif'))
+        # write camera properties to TIF using ImageJ metadata
+        # clip to ensure nonzero
+        err_img = np.clip(err_img, 0.0, None)
+        # set data type to float 32
+        err_img = err_img.astype(np.float32) 
+        tiff.imwrite(img_file, err_img, imagej=True, metadata=metadata)
+        print(f'Error image written to {img_file}')
+
+        # if FITS is true, save to FITs file also
+        img_file =str(Path(fits_dir, filename).with_suffix('.fits'))
+        hdu = fitsio.PrimaryHDU(err_img)
+        hdu.header['subject'] = self.subject
+        hdu.header['type'] = self.img_type
+        hdu.header['camera'] = int(self.camera)
+        hdu.header['serial'] = int(self.serial)
+        hdu.header['cwl'] = self.cwl
+        hdu.header['fwhm'] = self.fwhm
+        hdu.header['f-number'] = self.fnumber
+        hdu.header['f-length'] = self.flength
+        hdu.header['exposure'] = self.exposure
+        hdu.header['units'] = self.units
+        hdu.writeto(img_file, overwrite=True)
+
+    def save_fits(self):
+        """Save the average and error images to FITS files"""
+        # prepare metadata
+
+        # prepare FITS file
+
+
+        
 
 class DarkImage(Image):
     """Class for handling Dark Images, inherits Image class.
@@ -502,7 +559,7 @@ class CalibrationImage(Image):
 
     def get_reference_reflectance(self):
         # load the reference file
-        reference_file = Path('spectralon_reference.csv')
+        reference_file = Path('../../data/calibration/spectralon_reference.csv')
         data = np.genfromtxt(
                 reference_file,
                 delimiter=',',
@@ -1999,31 +2056,63 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
 
     return pct_data, full_well, k_adc, read_noise, lin_min, lin_max, offset, response
 
-def load_reflectance_calibration(subject: str='reflectance_calibration', roi: bool=False, caption: str=None) -> Dict:
-    channels = sorted(list(Path('..', 'data', subject).glob('[!.]*')))
+def load_reflectance_calibration(
+        scene_path: Path, 
+        dark_path: Path, 
+        display: bool=True, 
+        roi: bool=False, 
+        caption: str=None, 
+        threshold: Tuple[float,float]=(None,None),
+        save_tiff: bool=False) -> Dict:
+    # test scene directory exists
+    if not scene_path.exists():
+        raise FileNotFoundError(f'Could not find {scene_path}')
+    subject = scene_path.name
+    # channels = sorted(list(scene_path.glob('[!.]*')))
+    channels = sorted(list(next(os.walk(scene_path))[1]))
+    # if products in channels list, then drop products
+    if 'products' in channels:
+        channels.remove('products')
     cali_imgs = {} # store the calibration objects in a dictionary
-    title = 'Spectralon 99% Calibration Target'
-    fig, ax = grid_plot(title)
-    for channel_path in channels:
-        channel = channel_path.name
+    title = f'{subject} Images'
+    if display:
+        fig, ax = grid_plot(title)
+        if caption is not None:
+            grid_caption(caption[0])
+        title = f'{subject} Images SNR'
+        fig1, ax1 = grid_plot(title)
+        if caption is not None:
+            grid_caption(caption[1])
+    for channel in channels:
         # load the calibration target images
-        cali = LightImage(subject, channel)
+        cali = LightImage(scene_path, channel)
         cali.image_load()
         # load the calibration target dark frames
-        dark_cali = DarkImage(subject, channel)
+        dark_cali = DarkImage(dark_path, channel)
         dark_cali.image_load()
+        # Check exposure times are equal
+        light_exp = cali.exposure
+        dark_exp = dark_cali.exposure
+        if light_exp != dark_exp:
+            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
         # subtract the dark frame
         cali.dark_subtract(dark_cali)
         # show
-        cali.image_display(roi=roi, ax=ax[cali.camera], histo_ax=ax[8])
+        if display:
+            cali.image_display(roi=roi, ax=ax[cali.camera], histo_ax=ax[8], threshold=threshold[0])
+            cali.image_display(roi=roi, snr=True, ax=ax1[cali.camera], histo_ax=ax1[8], threshold=threshold[1])
         cali_imgs[channel] = cali
+        if save_tiff:
+            cali.save_tiff(uint16=False)
     show_grid(fig, ax)
+    show_grid(fig1, ax1)
     if caption is not None:
         grid_caption(caption)
+
     return cali_imgs
 
 def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: float=0.25) -> Dict:
-    """Calibrated the reflactance correction coefficients for images
+    """Calibrate the reflectance correction coefficients for images
     of the Spectralon reflectance target.
 
     :param subject: directory of target images, defaults to 'reflectance_calibration'
@@ -2066,7 +2155,8 @@ def load_sample(
         display: bool=True, 
         roi: bool=False, 
         caption: str=None, 
-        threshold: Tuple[float,float]=(None,None)) -> Dict:
+        threshold: Tuple[float,float]=(None,None),
+        save_tiff: bool=False) -> Dict:
     """Load images of the sample.
 
     :param subject: Directory of sample images, defaults to 'sample'
@@ -2074,8 +2164,15 @@ def load_sample(
     :return: Dictionary of sample LightImages (units of DN)
     :rtype: Dict
     """
+    # test scene directory exists
+    if not scene_path.exists():
+        raise FileNotFoundError(f'Could not find {scene_path}')
     subject = scene_path.name
-    channels = sorted(list(scene_path.glob('[!.]*')))
+    # channels = sorted(list(scene_path.glob('[!.]*')))
+    channels = sorted(list(next(os.walk(scene_path))[1]))
+    # if products in channels list, then drop products
+    if 'products' in channels:
+        channels.remove('products')
     smpl_imgs = {} # store the calibration objects in a dictionary
     title = f'{subject} Images'
     if display:
@@ -2086,25 +2183,26 @@ def load_sample(
         fig1, ax1 = grid_plot(title)
         if caption is not None:
             grid_caption(caption[1])
-    for channel_path in channels:
-        channel = channel_path.name
+    for channel in channels:
         smpl = LightImage(scene_path, channel)
         smpl.image_load()
-        # print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
-        # dark_smpl = DarkImage(dark_path, channel)
-        # dark_smpl.image_load()
+        print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
+        dark_smpl = DarkImage(dark_path, channel)
+        dark_smpl.image_load()
         # Check exposure times are equal
         light_exp = smpl.exposure
-        # dark_exp = dark_smpl.exposure
-        # if light_exp != dark_exp:
-        #     raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
-        # # subtract the dark frame
-        # smpl.dark_subtract(dark_smpl)
+        dark_exp = dark_smpl.exposure
+        if light_exp != dark_exp:
+            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+        # subtract the dark frame
+        smpl.dark_subtract(dark_smpl)
         # show
         if display:
             smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
             smpl.image_display(roi=roi, snr=True, ax=ax1[smpl.camera], histo_ax=ax1[8], threshold=threshold[1])
         smpl_imgs[channel] = smpl
+        if save_tiff:
+            smpl.save_tiff(uint16=False)
     if display:
         show_grid(fig, ax)
         show_grid(fig1, ax1)
@@ -2202,7 +2300,7 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict, caption: T
         cali_coeff = cali_coeffs[channel]
         refl = ReflectanceImage(smpl)
         refl.calibrate_reflectance(cali_coeff)
-        refl_max = np.max(refl.img_ave[np.isfinite(refl.img_ave)])
+        refl_max = np.max(refl.roi_image()[np.isfinite(refl.roi_image())])
         if refl_max > vmax:
             vmax = refl_max
         # save the reflectance image
@@ -2387,7 +2485,7 @@ def plot_roi_reflectance(
 
     return results
 
-def set_roi_mask(smpl_imgs: Dict, threshold: int=None) -> Dict:
+def set_roi_mask(smpl_imgs: Dict, threshold: int=None, roi: bool=False) -> Dict:
     """Draw an ROI on each image, and set this as a mask.
 
     :param smpl_imgs: Dictionary of Image objects for each channel
@@ -2398,7 +2496,7 @@ def set_roi_mask(smpl_imgs: Dict, threshold: int=None) -> Dict:
     channels = list(smpl_imgs.keys())
     for channel in channels:
         smpl = smpl_imgs[channel]
-        smpl.set_polyroi(threshold=threshold)
+        smpl.set_polyroi(threshold=threshold, roi=roi)
     return smpl_imgs
 
 def build_session_directory(session_path: Path) -> Dict:
