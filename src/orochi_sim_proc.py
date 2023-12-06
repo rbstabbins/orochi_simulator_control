@@ -397,15 +397,6 @@ class Image:
         hdu.header['units'] = self.units
         hdu.writeto(img_file, overwrite=True)
 
-    def save_fits(self):
-        """Save the average and error images to FITS files"""
-        # prepare metadata
-
-        # prepare FITS file
-
-
-        
-
 class DarkImage(Image):
     """Class for handling Dark Images, inherits Image class.
     """
@@ -2149,9 +2140,82 @@ def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: 
     show_grid(fig1, ax1)
     return cali_coeffs
 
+def process_flat_fields(
+        scene_path: Path, 
+        dark_path: Path, 
+        display: bool=True, 
+        roi: bool=False, 
+        caption: str=None, 
+        threshold: Tuple[float,float]=(None,None),
+        save_tiff: bool=False) -> Dict:
+    """Load images of the flat-field.
+
+    :param subject: Directory of sample images, defaults to 'sample'
+    :type subject: str, optional
+    :return: Dictionary of sample LightImages (units of DN)
+    :rtype: Dict
+    """
+    # test scene directory exists
+    if not scene_path.exists():
+        raise FileNotFoundError(f'Could not find {scene_path}')
+    subject = scene_path.name
+    # channels = sorted(list(scene_path.glob('[!.]*')))
+    channels = sorted(list(next(os.walk(scene_path))[1]))
+    # if products in channels list, then drop products
+    if 'products' in channels:
+        channels.remove('products')
+    ff_imgs = {} # store the flat field mean images in a dictionary
+    title = f'{subject} Images'
+    if display:
+        fig, ax = grid_plot(title)
+        if caption is not None:
+            grid_caption(caption[0])
+        title = f'{subject} Images SNR'
+        fig1, ax1 = grid_plot(title)
+        if caption is not None:
+            grid_caption(caption[1])
+    mean_channel_change = {}
+    for channel in channels:
+        ff = LightImage(scene_path, channel, img_type='ave')
+        ff.image_load(mode='median')
+        print(f'Loading {subject}: {ff.camera} ({int(ff.cwl)} nm)')
+        dark = DarkImage(dark_path, channel)
+        dark.image_load()
+        # subtract the dark frame
+        ff.dark_subtract(dark)
+
+        # get change in mean with each additional position
+        n_positions = 3
+        ff_stk = []
+        for i in np.arange(0, n_positions):
+            ff_roll = LightImage(scene_path, channel, img_type='ave')
+            ff_roll.image_load(n_imgs = i+1, mode='median')
+            ff_roll.dark_subtract(dark)
+            ff_stk.append(ff_roll.roi_image())
+        mean_change = [np.mean(np.abs(ff_stk[i-1] - ff_stk[i])) for i in np.arange(1,n_positions)]
+        # Check exposure times are equal
+        light_exp = ff.exposure
+        dark_exp = dark.exposure
+        if light_exp != dark_exp:
+            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+        # show
+        if display:
+            ff.image_display(roi=roi, ax=ax[ff.camera], histo_ax=ax[8], threshold=threshold[0])
+            ff.image_display(roi=roi, snr=True, ax=ax1[ff.camera], histo_ax=ax1[8], threshold=threshold[1])
+        ff_imgs[channel] = ff
+        if save_tiff:
+            ff.save_tiff(uint16=False)
+        mean_channel_change[channel] = mean_change
+    if display:
+        show_grid(fig, ax)
+        show_grid(fig1, ax1)
+
+    return ff_imgs, mean_channel_change
+
 def load_sample(
         scene_path: Path, 
         dark_path: Path, 
+        img_type: str='img',
         display: bool=True, 
         roi: bool=False, 
         caption: str=None, 
@@ -2184,7 +2248,7 @@ def load_sample(
         if caption is not None:
             grid_caption(caption[1])
     for channel in channels:
-        smpl = LightImage(scene_path, channel)
+        smpl = LightImage(scene_path, channel, img_type=img_type)
         smpl.image_load()
         print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
         dark_smpl = DarkImage(dark_path, channel)
