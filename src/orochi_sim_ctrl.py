@@ -409,8 +409,10 @@ class Channel:
         :type init_t_exp: float, optional
         :param target: target peak image level, defaults to 150
         :type target: int, optional
-        :param n_hot: number of hot pixels allowed exceed target, defaults to 10
-        :type n_hot: int, optional
+        :param n_hot: if >=1: number of hot pixels allowed exceed target, 
+                    if < 1: percentage of hot pixels allowed to exceed target,
+                    defaults to 10
+        :type n_hot: Union[int, float]
         :param tol: tolerance of meeting target criteria, defaults to 1
         :type tol: int, optional
         :param limit: number of trials to perform, defaults to 5
@@ -431,6 +433,13 @@ class Channel:
         t_min, t_max = 1.0/16666, 50.0 # self.get_exposure_range()
 
         target = target * self.max_dn
+
+
+        if n_hot < 1:
+            if roi:
+                n_hot = n_hot * self.camera_props['roiw'] * self.camera_props['roih']
+            else:
+                n_hot = n_hot * self.width * self.height
 
         while searching == True:
             print(f'Trial {trial_n}:')
@@ -568,7 +577,7 @@ class Channel:
     def check_roi_uniformity(self, n: int=25, ax: object=None, histo_ax: object=None) -> float:
         # check the uniformity of the ROI
         # self.find_exposure(roi=True)
-        img, _ = self.image_capture_repeat(n=n, roi=True)
+        img, _, _ = self.image_capture_repeat(n=n, roi=True)
         self.show_image(img, f'{self.camera_props["number"]}_{self.camera_props["cwl"]}', ax=ax, histo_ax=histo_ax)
         mean = np.mean(img)
         std = np.std(img)
@@ -672,12 +681,21 @@ class Channel:
         :rtype: Tuple[np.ndarray, np.ndarray]
         """    
         imgs = []
-        print(roi)
         imgs = [self.image_capture(roi=roi) for i in range(n)]
         img_stk = np.dstack(imgs).astype(np.float32)
         mean = np.mean(img_stk, axis=2)
         std = np.std(img_stk, axis=2)
-        return mean, std
+
+        if not roi:
+            x = self.camera_props['roix']
+            y = self.camera_props['roiy']
+            w = self.camera_props['roiw']
+            h = self.camera_props['roih']
+            roi_img = mean[x:x+w,y:y+h]
+        else:
+            roi_img = mean
+
+        return mean, std, roi_img
 
     def save_image(self, name, img_type, img_arr):
 
@@ -1111,6 +1129,12 @@ def set_f_numbers(cameras) -> None:
         print('-----------------------------------')
 
 # Experimental Functions
+def adjust_spectralon_prompt(ic, i, n):
+    title = 'Flat-Fielding'
+    msg = f'Update Spectralon Position [{i}/{n}]'
+    ic.IC_MsgBox(tis.T(msg), tis.T(title))
+
+
 def prepare_reflectance_calibration(ic):
     title = 'Imaging Calibration Target'
     msg = 'Check Calibration Target is in place'
