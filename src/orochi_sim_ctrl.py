@@ -578,11 +578,12 @@ class Channel:
         # check the uniformity of the ROI
         # self.find_exposure(roi=True)
         img, _, _ = self.image_capture_repeat(n=n, roi=True)
-        self.show_image(img, f'{self.camera_props["number"]}_{self.camera_props["cwl"]}', ax=ax, histo_ax=histo_ax)
         mean = np.mean(img)
         std = np.std(img)
-        print(f'ROI Uniformity: {100.0 * std / mean} %')
-        return std / mean
+        uniformity = 100.0 * std / mean
+        self.show_image(img, f'{self.camera_props["number"]}_{self.camera_props["cwl"]} Uniformity: {uniformity}', ax=ax, histo_ax=histo_ax)
+        print(f'ROI Uniformity: {uniformity} %')
+        return uniformity
   
     def image_capture(self, roi=False) -> np.ndarray:
         """Capture a single image from the camera.
@@ -644,13 +645,15 @@ class Channel:
             self.set_frame_rate(30.0) # set frame rate back to 30 fps
         return image
 
-    def show_image(self, img_arr, title, ax: object=None, histo_ax: object=None):
+    def show_image(self, img_arr, title: str='', ax: object=None, histo_ax: object=None):
         # if the image is 16 bit, convert to 8 bit for display
         if ax is None:
             fig, ax = plt.subplots(figsize=(5.8, 4.1))
-            ax.set_title(title)
+        
+        if title == '':
+            ax.set_title(f"{self.camera_props['number']}_{int(self.camera_props['cwl'])} Exposure: {self.get_exposure_value():.4f} s")
         else:
-            ax.set_title(f"{self.camera_props['number']}_{int(self.camera_props['cwl'])} {self.get_exposure_value():.4f} s")
+            ax.set_title(title)
         disp = ax.imshow(img_arr, origin='upper')
         im_ratio = img_arr.shape[0] / img_arr.shape[1]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio, label='DN')
@@ -1000,7 +1003,7 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
         for i in range(repeats):
             img = camera.image_capture(roi=roi)
             if show_img:
-                title = f'Device {cam_num} {session} {scene} #{i}'
+                title = ''
                 if ax is not None:
                     this_ax = ax[cam_num]
                     histo_ax = ax[8]
