@@ -52,14 +52,14 @@ INIT_EXPOSURES = {
         7: 0.230196,
     },
     'CHECKERBOARD': {
-        0: 1.0/500,
-        1: 1.0/500,
-        2: 1.0/500,
-        3: 1.0/500,
-        4: 1.0/500,
-        5: 1.0/500,
-        6: 1.0/500,
-        7: 1.0/500,
+        0: 0.448433,
+        1: 0.317814,
+        2: 1.370842,
+        3: 0.091816,
+        4: 0.054621,
+        5: 2.729796,
+        6: 0.091901,
+        7: 0.171748
     }
 }
 
@@ -130,6 +130,9 @@ class Channel:
             26 (10% of the range, for linearity)
         :type black_level: int, optional
         """
+        print('***********************************')
+        print(f'Setting Properties for Camera {self.number} ({self.name})')
+        print('***********************************')
         # 8-bit
         if bit_depth == 8:
             vid_format = "Y800 (1920x1200)"
@@ -139,10 +142,12 @@ class Channel:
             vid_format = "Y16 (1920x1200)"
             sink_format_id = 4
         ret = self.ic.IC_SetVideoFormat(self.grabber, tis.T(vid_format))
-        print(ret)
+        if ret != 1:
+            print(f'Video Format error code: {ret}')
         print(f'Video Format set to : {vid_format}')
         ret = self.ic.IC_SetFormat(self.grabber, ctypes.c_int(sink_format_id))
-        print(ret)
+        if ret != 1:
+            print(f'Sink Format error code: {ret}')
         print(f'Sink Format set to : "{tis.SinkFormats(sink_format_id)}"')        
         # ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(fps))
         # print(f'Frame Rate set to : {fps} FPS')
@@ -181,6 +186,9 @@ class Channel:
             """Get the current property values of the camera.
             """
             # Get image info
+            print('***********************************')
+            print(f'Current State of Camera {self.number} ({self.name})')
+            print('***********************************')
             width, height, buffer_size, bpp = self.get_image_info()
             print(f'Image size: {width} x {height} pixels')
             print(f'Image buffer size: {buffer_size} bytes')
@@ -308,7 +316,7 @@ class Channel:
         time.sleep(wait)
 
         if ret == 1:
-            # print(f'{property} {element} set to {value.value}')
+            print(f'{property} {element} set to {value.value}')
             pass
         elif ret == -2:
             raise ValueError('No video capture device opened')
@@ -324,7 +332,8 @@ class Channel:
     def set_frame_rate(self, rate: float) -> int:
         # print(f'Setting Frame Rate to : {rate} FPS')
         ret = self.ic.IC_SetFrameRate(self.grabber, ctypes.c_float(rate)) # set frame rate to 30 FPS
-        print(f'set frame rate err: {ret}')
+        if ret != 1:
+            print(f'Frame Rate Error Code: {ret}')
         set_rate = self.ic.IC_GetFrameRate(self.grabber)
         print(f'Frame Rate set to : {set_rate} FPS')
         return ret
@@ -361,7 +370,7 @@ class Channel:
                 tis.T(element), container)
 
         if ret == 1:
-            print(f'{property} current {element}: {container.value}')
+            print(f'{property} {element}: {container.value}')
             return container.value
         elif ret == -2:
             raise ValueError('No video capture device opened')
@@ -433,7 +442,6 @@ class Channel:
         t_min, t_max = 1.0/16666, 50.0 # self.get_exposure_range()
 
         target = target * self.max_dn
-
 
         if n_hot < 1:
             if roi:
@@ -667,7 +675,7 @@ class Channel:
                         log=True, fill=False, stacked=True, histtype='step')
             histo_ax.set_xlabel('DN')
             # plt.tight_layout()
-            # histo_ax.legend()
+            histo_ax.legend()
 
         # plt.tight_layout()
 
@@ -953,12 +961,35 @@ def set_channel_exposures(cameras: List, exposures: Union[float, Dict, str]) -> 
         if isinstance(exposures, float):
             expo = exposures
         elif isinstance(exposures, dict):
-            expo = exposures[camera.name]
+            try:
+                expo = exposures[camera.name]
+            except:
+                expo = exposures[camera.number]
         elif isinstance(exposures, str):
             expo = INIT_EXPOSURES[exposures][camera.number]
         camera.set_exposure(expo)
         print(f'Exposure set to {expo} s')
         print('-----------------------------------')
+
+def get_channel_exposures(cameras: List) -> Dict:
+    """Get the exposure time for each camera.
+
+    :param cameras: list of camera objects
+    :type cameras: List
+    :param exposures: exposure time for each camera
+    :type exposures: Union[double, Dict]
+    """
+    exposures = {}
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num}')
+        print('-----------------------------------')
+        expo = camera.get_exposure_value()
+        print(f'Exposure is to {expo} s')
+        exposures[camera.name] = expo
+        print('-----------------------------------')
+    return exposures
 
 # Image Capture and Information Export
 def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None, 
@@ -1012,8 +1043,10 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
                     histo_ax = None
                 camera.show_image(img, title, ax=this_ax, histo_ax=histo_ax)
             if save_img:
-                camera.save_image(str(i), img_type, img)
+                camera.save_image(str(i), img_type,  )
         print('-----------------------------------')
+    record_exposures(cameras)
+    export_camera_config(cameras)
 
 def export_camera_config(cameras: List):
     """Export the camera properties to a csv file.
@@ -1034,6 +1067,17 @@ def export_camera_config(cameras: List):
     subject_dir.mkdir(parents=True, exist_ok=True)
     camera_file = Path(subject_dir, 'camera_config.csv')
     cam_df.to_csv(camera_file)
+
+def get_camera_info(cameras: List):
+    cam_info = []
+    for camera in cameras:
+        cam_props = list(camera.camera_props.values())
+        index = list(camera.camera_props.keys())
+        cam_info.append(pd.Series(cam_props, index = index, name = camera.name))
+    cam_df = pd.concat(cam_info, axis=1)
+    cam_df.sort_values('number', axis=1, ascending=True, inplace=True)
+    return cam_df
+
 
 def record_exposures(cameras, exposures=None) -> None:
     subject_dir = Path('..', '..', 'data', 'sessions', cameras[0].session, cameras[0].scene)
@@ -1137,6 +1181,10 @@ def adjust_spectralon_prompt(ic, i, n):
     msg = f'Update Spectralon Position [{i}/{n}]'
     ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
+def adjust_sample_prompt(ic):
+    title = 'Sample Imaging'
+    msg = f'Adjust Sample Position'
+    ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
 def prepare_reflectance_calibration(ic):
     title = 'Imaging Calibration Target'

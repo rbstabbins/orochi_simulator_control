@@ -56,7 +56,7 @@ class Image:
         self.img_ave = None
         self.img_std = None    
 
-    def image_load(self, n_imgs: int=None, mode: str='mean') -> None:
+    def image_load(self, n_imgs: int=None, mode: str='mean', stack: np.ndarray=None) -> None:
         """Load images from the subject directory for the given type,
         populate properties, and compute averages and standard deviation.
         """
@@ -112,6 +112,8 @@ class Image:
         # std. stack
         self.img_std = np.std(img_stk, axis=2)
         print(f'Loaded {f+1} images ({self.img_type}) for: {self.camera} ({int(self.cwl)} nm)')
+        if stack is not None:
+            return img_stk, files
 
     def roi_image(self, polyroi: bool=False) -> np.ndarray:
         """Returns the region of interest of the image.
@@ -215,8 +217,7 @@ class Image:
         img_ave_std = np.nanstd(img, where=np.isfinite(img))
         img_std_mean = np.nanmean(std, where=np.isfinite(img))
 
-        # standard error on the mean
-
+        n_pixels = len(np.isfinite(img))
 
         # weighted average
         ma_img = np.ma.array(img, mask=(np.isnan(img) * ~np.equal(std, 0.0))) # mask nans
@@ -228,7 +229,7 @@ class Image:
         img_ave_wt_var = np.ma.average((ma_img - img_ave_wt_mean)**2, weights=1.0/ma_std**2)
         img_ave_wt_std = np.sqrt(img_ave_wt_var)
 
-        return img_ave_mean, img_ave_std, img_std_mean, img_ave_wt_mean, img_ave_wt_std
+        return img_ave_mean, img_ave_std, img_std_mean, img_ave_wt_mean, img_ave_wt_std, n_pixels
 
     def image_display(self,
                       ax: object=None, histo_ax: object=None,
@@ -271,6 +272,8 @@ class Image:
         im_ratio = img.shape[0] / img.shape[1]
         cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=label)
 
+        col = channel_cols(self.camera)
+
         if ('Noise' in label):
             cbar.formatter.set_powerlimits((0, 0))
         elif ('DN' in label):
@@ -288,8 +291,12 @@ class Image:
             counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)        
             histo_ax.hist(bins[:-1], bins, weights=counts,
                         label=f'{int(self.cwl)} nm ({self.camera})',
+                        color=col,
                         log=True, fill=False, stacked=True, histtype='step')
             histo_ax.set_xlabel(label)
+            # histo_ax.set_box_aspect(im_ratio)
+            histo_ax.legend()
+            histo_ax
 
         if ax is None:
             plt.tight_layout()
@@ -339,7 +346,7 @@ class Image:
             out_img = self.img_ave
             err_img = self.img_std
 
-        out_img = np.clip(out_img, 0.0, None) # clip to ensure non-negative
+        # out_img = np.clip(out_img, 0.0, None) # clip to ensure non-negative
 
         if uint8:
             # convert to 8-bit
@@ -347,9 +354,10 @@ class Image:
         elif uint16:
             # convert to 16-bit
             out_img = np.floor(out_img).astype(np.uint16)
+        else:
+            out_img = out_img.astype(np.float32) # set data type to float 32
 
         # write camera properties to TIF using ImageJ metadata        
-        out_img = out_img.astype(np.float32) # set data type to float 32
         img_file =str(Path(tiffs_dir, filename).with_suffix('.tif'))
         tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
         print(f'Mean image written to {img_file}')
@@ -376,7 +384,7 @@ class Image:
         img_file =str(Path(tiffs_dir, filename).with_suffix('.tif'))
         # write camera properties to TIF using ImageJ metadata
         # clip to ensure nonzero
-        err_img = np.clip(err_img, 0.0, None)
+        # err_img = np.clip(err_img, 0.0, None)
         # set data type to float 32
         err_img = err_img.astype(np.float32) 
         tiff.imwrite(img_file, err_img, imagej=True, metadata=metadata)
@@ -428,8 +436,8 @@ class LightImage(Image):
         self.img_ave -= dark_image.img_ave
         # quadrture sum the image noise with the dark signal noise
         lght_err = self.img_std/lst_ave
-        drk_err = dark_image.img_std/dark_image.img_ave
-        self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (drk_err)**2)
+        drk_err = (dark_image.img_std / np.sqrt(dark_image.n_imgs))/dark_image.img_ave
+        self.img_std = self.img_ave * np.sqrt((lght_err)**2) # + (drk_err)**2)
         self.units = 'Above-Bias Signal DN'
         print(f'Subtracting dark frame for: {self.camera} ({int(self.cwl)} nm)')
 
@@ -550,7 +558,7 @@ class CalibrationImage(Image):
 
     def get_reference_reflectance(self):
         # load the reference file
-        reference_file = Path('../../data/calibration/spectralon_reference.csv')
+        reference_file = Path('../../data/calibration/reflectance_reference/spectralon_reference.csv')
         data = np.genfromtxt(
                 reference_file,
                 delimiter=',',
@@ -583,7 +591,7 @@ class CalibrationImage(Image):
         np.divide(self.reference_reflectance, self.img_ave, out=out, where=self.img_ave!=0)
         self.img_ave = out
         out = np.full(self.img_std.shape, np.nan)
-        np.divide(self.img_std, lst_ave, out=out, where=lst_ave!=0)
+        np.divide((self.img_std/np.sqrt(self.n_imgs)), lst_ave, out=out, where=lst_ave!=0)
         lght_err = out
         ref_err = self.reference_reflectance_err/self.reference_reflectance
         self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (ref_err)**2)
@@ -622,7 +630,7 @@ class ReflectanceImage(Image):
         self.img_ave = self.img_ave * cali_source.img_ave
         self.units = 'Reflectance'
         lght_err = self.img_std/lst_ave
-        cali_err = cali_source.img_std/cali_source.img_ave
+        cali_err = (cali_source.img_std / np.sqrt(cali_source.n_imgs ))/cali_source.img_ave
         self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (cali_err)**2)
 
     def normalise(self, base: Image):
@@ -2055,48 +2063,68 @@ def load_reflectance_calibration(
         caption: str=None, 
         threshold: Tuple[float,float]=(None,None),
         save_tiff: bool=False) -> Dict:
+    
     # test scene directory exists
     if not scene_path.exists():
         raise FileNotFoundError(f'Could not find {scene_path}')
     subject = scene_path.name
-    # channels = sorted(list(scene_path.glob('[!.]*')))
     channels = sorted(list(next(os.walk(scene_path))[1]))
     # if products in channels list, then drop products
     if 'products' in channels:
         channels.remove('products')
-    cali_imgs = {} # store the calibration objects in a dictionary
+
+    # set up plots
     title = f'{subject} Images'
     if display:
         fig, ax = grid_plot(title)
         if caption is not None:
             grid_caption(caption[0])
-        title = f'{subject} Images SNR'
+        title = f'{subject} Images Noise'
         fig1, ax1 = grid_plot(title)
         if caption is not None:
             grid_caption(caption[1])
+        title = f'{subject} Image SNR'
+        fig2, ax2 = grid_plot(title)
+        if caption is not None:
+            grid_caption(caption[2])
+
+    cali_imgs = {} # store the calibration objects in a dictionary
     for channel in channels:
+
         # load the calibration target images
         cali = LightImage(scene_path, channel)
         cali.image_load()
+        
         # load the calibration target dark frames
         dark_cali = DarkImage(dark_path, channel)
         dark_cali.image_load()
+        
+        # check the dark signal and DSNU
+        print(dark_cali.dark_signal())
+        
         # Check exposure times are equal
         light_exp = cali.exposure
         dark_exp = dark_cali.exposure
         if light_exp != dark_exp:
             raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+        
         # subtract the dark frame
         cali.dark_subtract(dark_cali)
+        
         # show
         if display:
             cali.image_display(roi=roi, ax=ax[cali.camera], histo_ax=ax[8], threshold=threshold[0])
-            cali.image_display(roi=roi, snr=True, ax=ax1[cali.camera], histo_ax=ax1[8], threshold=threshold[1])
+            cali.image_display(roi=roi, noise=True, ax=ax1[cali.camera], histo_ax=ax1[8], threshold=threshold[1])
+            cali.image_display(roi=roi, snr=True, ax=ax2[cali.camera], histo_ax=ax2[8], threshold=threshold[1])
+        
         cali_imgs[channel] = cali
         if save_tiff:
             cali.save_tiff(uint16=False)
+    
+    # show plots
     show_grid(fig, ax)
     show_grid(fig1, ax1)
+    show_grid(fig2, ax2)
     if caption is not None:
         grid_caption(caption)
 
@@ -2140,6 +2168,101 @@ def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: 
     show_grid(fig1, ax1)
     return cali_coeffs
 
+def analyse_flat_fields(
+        flat_fields: Dict, 
+        scene_path: Path, 
+        dark_path: Path, 
+        display: bool=True, 
+        roi: bool=False, 
+        caption: str=None, 
+        threshold: Tuple[float,float]=(None,None),
+        save_tiff: bool=False) -> Dict:
+    """Load images of the flat-field.
+
+    :param subject: Directory of sample images, defaults to 'sample'
+    :type subject: str, optional
+    :return: Dictionary of sample LightImages (units of DN)
+    :rtype: Dict
+    """
+    # test scene directory exists
+    if not scene_path.exists():
+        raise FileNotFoundError(f'Could not find {scene_path}')
+    subject = scene_path.name
+    # channels = sorted(list(scene_path.glob('[!.]*')))
+    channels = sorted(list(next(os.walk(scene_path))[1]))
+    # if products in channels list, then drop products
+    if 'products' in channels:
+        channels.remove('products')
+    ff_imgs = {} # store the flat field mean images in a dictionary
+    title = f'{subject} Median ROIs'
+    if display:
+        fig, ax = grid_plot(title)
+        if caption is not None:
+            grid_caption(caption[0])
+        fig1, ax1 = grid_plot('Flat Fields')
+        if caption is not None:
+            grid_caption(caption[0])
+
+    ff_roll_uniformity = {}
+    ff_uniformity = {}
+
+    # load spectralon example
+    test_path = Path(scene_path.parent, 'spectralon')
+    test_dark_path = Path(dark_path.parent, 'spectralon_dark')
+    spectralon = load_reflectance_calibration(test_path, test_dark_path, display=True, roi=True, save_tiff=False)
+
+    for channel in channels:
+        ff = flat_fields[channel]
+        # get change in mean with each additional position
+        n_positions = ff.n_imgs
+        ff_stk = []
+
+        smpl = spectralon[channel] # reference target
+
+        ff_roll_uniformity[channel] = []
+        for i in np.arange(0, n_positions):
+            ff_roll = LightImage(scene_path, channel, img_type='ave')
+            ff_roll.image_load(n_imgs = i+1, mode='median')
+            dark = DarkImage(dark_path, channel)
+            dark.image_load()
+            ff_roll.dark_subtract(dark)
+
+            # apply the flat field to the reference target
+            ff_roll.img_ave = smpl.img_ave / ff_roll.img_ave
+
+            # ff_stk.append(ff_roll.roi_image())
+            ff_roll_uniformity[channel].append(100.0* (1 - np.nanstd(ff_roll.roi_image()) / np.nanmean(ff_roll.roi_image())))
+
+        # Check exposure times are equal
+        light_exp = ff.exposure
+        dark_exp = dark.exposure
+        if light_exp != dark_exp:
+            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+     
+        # apply the flat field to the reference target
+        smpl.img_ave = smpl.img_ave / ff.img_ave
+        # copy flat field ROI to the smpl ROI
+        smpl.roi = ff.roi
+        smpl.roix = ff.roix
+        smpl.roiy = ff.roiy
+        smpl.roiw = ff.roiw
+        smpl.roih = ff.roih
+
+        # log the uniformity of the flat-fielded image
+        ff_uniformity[channel] = 100.0* (1 - np.nanstd(smpl.roi_image()) / np.nanmean(smpl.roi_image()))
+
+        if display:
+            smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
+            ff.image_display(roi=roi, ax=ax1[ff.camera], histo_ax=ax1[8], threshold=threshold[1])
+        # if save_tiff:
+        #     ff.save_tiff(uint16=False)
+
+    if display:
+        show_grid(fig, ax)
+        show_grid(fig1, ax1)
+
+    return ff_roll_uniformity, ff_uniformity
+
 def process_flat_fields(
         scene_path: Path, 
         dark_path: Path, 
@@ -2165,16 +2288,16 @@ def process_flat_fields(
     if 'products' in channels:
         channels.remove('products')
     ff_imgs = {} # store the flat field mean images in a dictionary
-    title = f'{subject} Images'
+    title = f'{subject} Median ROIs'
     if display:
         fig, ax = grid_plot(title)
         if caption is not None:
             grid_caption(caption[0])
-        title = f'{subject} Images SNR'
+        title = f'{subject} Noise ROIs'
         fig1, ax1 = grid_plot(title)
         if caption is not None:
             grid_caption(caption[1])
-    mean_channel_change = {}
+
     for channel in channels:
         ff = LightImage(scene_path, channel, img_type='ave')
         ff.image_load(mode='median')
@@ -2184,37 +2307,38 @@ def process_flat_fields(
         # subtract the dark frame
         ff.dark_subtract(dark)
 
-        # get change in mean with each additional position
-        n_positions = 3
-        ff_stk = []
-        for i in np.arange(0, n_positions):
-            ff_roll = LightImage(scene_path, channel, img_type='ave')
-            ff_roll.image_load(n_imgs = i+1, mode='median')
-            ff_roll.dark_subtract(dark)
-            ff_stk.append(ff_roll.roi_image())
-        mean_change = [np.mean(np.abs(ff_stk[i-1] - ff_stk[i])) for i in np.arange(1,n_positions)]
         # Check exposure times are equal
         light_exp = ff.exposure
         dark_exp = dark.exposure
         if light_exp != dark_exp:
             raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+
+        # normalise the flat field to the maximum value in the ROI, after Gaussian blurring with a 3x3 kernel
+        ff_roi = ff.roi_image()
+        ff_roi = cv2.GaussianBlur(ff_roi, (3,3), 0)
+        ff.img_ave = ff.img_ave / ff_roi.max()
+        ff.img_std = ff.img_std / ff_roi.max()
+        ff.img_type = 'flat-field'
+        ff.units = '1'
+
+        ff_imgs[channel] = ff
+        
         # show
         if display:
             ff.image_display(roi=roi, ax=ax[ff.camera], histo_ax=ax[8], threshold=threshold[0])
-            ff.image_display(roi=roi, snr=True, ax=ax1[ff.camera], histo_ax=ax1[8], threshold=threshold[1])
-        ff_imgs[channel] = ff
+            ff.image_display(roi=roi, noise=True, ax=ax1[ff.camera], histo_ax=ax1[8], threshold=threshold[1])
+
         if save_tiff:
             ff.save_tiff(uint16=False)
-        mean_channel_change[channel] = mean_change
     if display:
         show_grid(fig, ax)
         show_grid(fig1, ax1)
 
-    return ff_imgs, mean_channel_change
+    return ff_imgs
 
 def load_sample(
         scene_path: Path, 
-        dark_path: Path, 
+        dark_path: Path=None, 
         img_type: str='img',
         display: bool=True, 
         roi: bool=False, 
@@ -2243,33 +2367,42 @@ def load_sample(
         fig, ax = grid_plot(title)
         if caption is not None:
             grid_caption(caption[0])
-        title = f'{subject} Images SNR'
+        title = f'{subject} Images Noise'
         fig1, ax1 = grid_plot(title)
         if caption is not None:
             grid_caption(caption[1])
+        title = f'{subject} Images SNR'
+        fig2, ax2 = grid_plot(title)
+        if caption is not None:
+            grid_caption(caption[2])
     for channel in channels:
         smpl = LightImage(scene_path, channel, img_type=img_type)
         smpl.image_load()
         print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
-        dark_smpl = DarkImage(dark_path, channel)
-        dark_smpl.image_load()
-        # Check exposure times are equal
-        light_exp = smpl.exposure
-        dark_exp = dark_smpl.exposure
-        if light_exp != dark_exp:
-            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
-        # subtract the dark frame
-        smpl.dark_subtract(dark_smpl)
+
+        if dark_path is not None:
+            dark_smpl = DarkImage(dark_path, channel)
+            dark_smpl.image_load()
+            # Check exposure times are equal
+            light_exp = smpl.exposure
+            dark_exp = dark_smpl.exposure
+            if light_exp != dark_exp:
+                raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+            # subtract the dark frame
+            smpl.dark_subtract(dark_smpl)
+
         # show
         if display:
             smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
-            smpl.image_display(roi=roi, snr=True, ax=ax1[smpl.camera], histo_ax=ax1[8], threshold=threshold[1])
+            smpl.image_display(roi=roi, noise=True, ax=ax1[smpl.camera], histo_ax=ax1[8], threshold=threshold[1])
+            smpl.image_display(roi=roi, snr=True, ax=ax2[smpl.camera], histo_ax=ax2[8], threshold=threshold[1])
         smpl_imgs[channel] = smpl
         if save_tiff:
             smpl.save_tiff(uint16=False)
     if display:
         show_grid(fig, ax)
         show_grid(fig1, ax1)
+        show_grid(fig2, ax2)
     return smpl_imgs
 
 def load_dark_frames(subject: str='sample', roi: bool=False, caption: Tuple[str, str]=None) -> Dict:
@@ -2459,6 +2592,33 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550', caption: Tuple[str,st
     show_grid(fig1, ax1)
     return aligned_imgs
 
+def load_reference_reflectance(refl_imgs, reference_filename: str):
+        # load the reference file
+        reference_dir = Path('../../data/calibration/reflectance_reference')
+        reference_file = Path(reference_dir, reference_filename).with_suffix('.csv')
+        data = np.genfromtxt(
+                reference_file,
+                delimiter=',',
+                names=True,
+                dtype=float)
+        # access the cwl and fwhm
+        channels = list(refl_imgs.keys())
+        cwls = []
+        means = []
+        stds = []
+        for channel in channels:
+            camera = refl_imgs[channel]
+            lo = camera.cwl - camera.fwhm/2
+            hi = camera.cwl + camera.fwhm/2
+            band = np.where((data['wavelength'] > lo) & (data['wavelength'] < hi))
+            # set the reference reflectance and error
+            cwls.append(camera.cwl)
+            means.append(np.mean(data['reflectance'][band]))
+            stds.append(np.std(data['reflectance'][band]))
+        reference_reflectance = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'standard deviation':stds})
+        reference_reflectance.sort_values(by='cwl', inplace=True)
+        return reference_reflectance
+
 def plot_roi_reflectance(
         refl_imgs: Dict,
         reference_reflectance: pd.DataFrame=None,
@@ -2474,22 +2634,26 @@ def plot_roi_reflectance(
     """
     cwls = []
     means = []
+    n_pixs = []
     stds = []
-    errs = []
+    means_of_img_std = []
+    stderr = []
     wt_means = []
     wt_stds = []
     channels = list(refl_imgs.keys())
     for channel in channels:
         refl_img = refl_imgs[channel]
-        mean, std, err, wt_mean, wt_std = refl_img.image_stats(polyroi=True)
+        mean, std, mean_of_img_std, wt_mean, wt_std, n_pix = refl_img.image_stats(polyroi=True)
         cwl = refl_img.cwl
         cwls.append(cwl)
         means.append(mean)
+        n_pixs.append(n_pix)
         stds.append(std)
-        errs.append(err)
+        means_of_img_std.append(mean_of_img_std)
+        stderr.append(std / np.sqrt(n_pix))
         wt_means.append(wt_mean)
         wt_stds.append(wt_std)
-    results = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'standard deviation':stds, 'err':errs, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
+    results = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'n_pixels': n_pixs, 'standard deviation':stds, 'mean_of_img_std':means_of_img_std, 'standard error':stderr, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
     results.sort_values(by='cwl', inplace=True)
     # results.plot(x='cwl', y='mean', yerr='std')
 
@@ -2504,22 +2668,35 @@ def plot_roi_reflectance(
                 ecolor='k',
                 capsize=2.0)
     else:
-        plt.errorbar(
-                x=results.cwl,
-                y=results.reflectance,
-                yerr=results['standard deviation'],
-                fmt='o-',
-                # ecolor='k',
-                capsize=2.0)
         if show_error_limit:
             plt.errorbar(
                     x=results.cwl,
                     y=results.reflectance,
-                    yerr=results.err,
+                    yerr=results.mean_of_img_std,
                     fmt='',
                     linestyle='',
                     ecolor='r',
+                    label='Error as Mean of Pixel Std. Dev.',
                     capsize=6.0)
+            plt.errorbar(
+                    x=results.cwl,
+                    y=results.reflectance,
+                    yerr=results['standard deviation'],
+                    fmt='',
+                    linestyle='',   
+                    ecolor='b',
+                    label='Error as Std. Dev. of ROI',
+                    capsize=2.0)
+            plt.errorbar(
+                    x=results.cwl,
+                    y=results.reflectance,
+                    yerr=results['standard error'],
+                    fmt='o-',
+                    # linestyle='',
+                    ecolor='k',
+                    label='Error as Std. Error of ROI.',
+                    capsize=6.0)
+    plt.legend()
     plt.xlabel('Wavelength (nm)')
     plt.ylabel('Reflectance')
     # plt.title('Sample Reflectance Mean ± 1σ over ROI')
@@ -2532,19 +2709,12 @@ def plot_roi_reflectance(
             fmt='o-',
             capsize=2.0
         )
-        if show_error_limit:
-            plt.errorbar(
-                    x=results.cwl,
-                    y=results.reflectance,
-                    yerr=results.err,
-                    fmt='x-',
-                    ecolor='r',
-                    capsize=5.0)
 
     if caption is not None:
         grid_caption(caption)
 
-    results['SNR Limit'] = results['reflectance'] / results['err']
+
+    results['SNR Limit'] = results['reflectance'] / results['mean_of_img_std']
     results['SNR'] = results['reflectance'] / results['standard deviation']
 
     return results
