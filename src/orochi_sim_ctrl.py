@@ -589,8 +589,8 @@ class Channel:
         mean = np.mean(img)
         std = np.std(img)
         uniformity = 100.0 * std / mean
-        self.show_image(img, f'{self.camera_props["number"]}_{self.camera_props["cwl"]} Uniformity: {uniformity}', ax=ax, histo_ax=histo_ax)
-        print(f'ROI Uniformity: {uniformity} %')
+        self.show_image(img, f'{self.camera_props["number"]}_{self.camera_props["cwl"]} Uniformity: {uniformity:.2f} %', ax=ax, histo_ax=histo_ax)
+        print(f'ROI Uniformity: {uniformity} %') 
         return uniformity
   
     def image_capture(self, roi=False) -> np.ndarray:
@@ -1043,7 +1043,7 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
                     histo_ax = None
                 camera.show_image(img, title, ax=this_ax, histo_ax=histo_ax)
             if save_img:
-                camera.save_image(str(i), img_type,  )
+                camera.save_image(str(i), img_type, img)
         print('-----------------------------------')
     record_exposures(cameras)
     export_camera_config(cameras)
