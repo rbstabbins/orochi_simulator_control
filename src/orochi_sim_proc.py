@@ -88,20 +88,20 @@ class Image:
             self.fnumber = self.check_property(self.fnumber, meta['f-number'])
             self.flength = self.check_property(self.flength, meta['f-length'])
             self.exposure = self.check_property(self.exposure, meta['exposure'])
-            try:
-                self.roix = self.check_property(self.roix, meta['roix'])
-                self.roiy = self.check_property(self.roiy, meta['roiy'])
-                self.roiw = self.check_property(self.roiw, meta['roiw'])
-                self.roih = self.check_property(self.roih, meta['roih'])
-            except (KeyError, ValueError):
-                # read the camera_config file to get the ROI
-                camera_info = osc.load_camera_config(Path(self.scene_dir,'..').resolve())
-                cam_name = f'DMK 33GX249 {int(self.serial)}'
-                cam_props = camera_info[cam_name]
-                self.roix = cam_props['roix']
-                self.roiy = cam_props['roiy']
-                self.roiw = cam_props['roiw']
-                self.roih = cam_props['roih']
+            # try:
+            #     self.roix = self.check_property(self.roix, meta['roix'])
+            #     self.roiy = self.check_property(self.roiy, meta['roiy'])
+            #     self.roiw = self.check_property(self.roiw, meta['roiw'])
+            #     self.roih = self.check_property(self.roih, meta['roih'])
+            # except (KeyError, ValueError):
+            # read the camera_config file to get the ROI
+            camera_info = osc.load_camera_config(Path(self.dir, '..').resolve())
+            cam_name = f'DMK 33GX249 {int(self.serial)}'
+            cam_props = camera_info[cam_name]
+            self.roix = cam_props['roix']
+            self.roiy = cam_props['roiy']
+            self.roiw = cam_props['roiw']
+            self.roih = cam_props['roih']
 
         img_stk = np.dstack(img_list)
         # average stack
@@ -193,7 +193,7 @@ class Image:
             mpl.use('Qt5Agg')  # need this backend for RoiPoly to work
             fig = plt.figure(figsize=(10,10), dpi=80)
             plt.imshow(img, origin='upper')
-            plt.title('Draw ROI')
+            plt.title(f'{self.channel}')
 
             my_roi = RoiPoly(fig=fig) # draw new ROI in red color
             plt.close()
@@ -204,15 +204,22 @@ class Image:
             mpl.use(default_backend)  # reset backend
         else:
             roi_mask = img > threshold
+        print(f'Number of pixels in {self.channel} mask: {np.sum(roi_mask)}')
         self.polyroi = roi_mask
 
-    def image_stats(self, polyroi: bool=False) -> None:
+    def image_stats(self, roi: bool=False, polyroi: bool=False) -> None:
         """Print image statistics
         """
         if polyroi:
-            img = self.roi_image()[self.polyroi]
+            if roi:
+                img = self.roi_image()[self.polyroi]
+            else:
+                img = self.img_ave[self.polyroi]
         if polyroi:
-            std = self.roi_std()[self.polyroi]
+            if roi:
+                std = self.roi_std()[self.polyroi]
+            else:
+                std = self.img_std[self.polyroi]
         img_ave_mean = np.nanmean(img, where=np.isfinite(img))
         img_ave_std = np.nanstd(img, where=np.isfinite(img))
         img_std_mean = np.nanmean(std, where=np.isfinite(img))
@@ -432,12 +439,22 @@ class LightImage(Image):
         self.f_length = None
 
     def dark_subtract(self, dark_image: DarkImage) -> None:
-        lst_ave = self.img_ave.copy()
-        self.img_ave -= dark_image.img_ave
+        
+        if isinstance(dark_image, float):
+            lst_ave = self.img_ave.copy()
+            self.img_ave -= dark_image
+            self.img_ave = np.clip(self.img_ave, 0.0, None)
+            lght_err = self.img_std/lst_ave
+            drk_err = 0.0
+        else:
+            lst_ave = self.img_ave.copy()
+            self.img_ave -= dark_image.img_ave        
+            self.img_ave = np.clip(self.img_ave, 0.0, None) # clip 0s
+            lght_err = self.img_std/lst_ave
+            drk_err = (dark_image.img_std / np.sqrt(dark_image.n_imgs))/dark_image.img_ave
+
         # quadrture sum the image noise with the dark signal noise
-        lght_err = self.img_std/lst_ave
-        drk_err = (dark_image.img_std / np.sqrt(dark_image.n_imgs))/dark_image.img_ave
-        self.img_std = self.img_ave * np.sqrt((lght_err)**2) # + (drk_err)**2)
+        self.img_std = np.sqrt((lght_err)**2 + (drk_err)**2)
         self.units = 'Above-Bias Signal DN'
         print(f'Subtracting dark frame for: {self.camera} ({int(self.cwl)} nm)')
 
@@ -558,7 +575,7 @@ class CalibrationImage(Image):
 
     def get_reference_reflectance(self):
         # load the reference file
-        reference_file = Path('../../data/calibration/reflectance_reference/spectralon_reference.csv')
+        reference_file = Path('../../data/calibration/reflectance_reference/isas_spectralon_reference.csv')
         data = np.genfromtxt(
                 reference_file,
                 delimiter=',',
@@ -627,6 +644,10 @@ class ReflectanceImage(Image):
 
     def calibrate_reflectance(self, cali_source):
         lst_ave = self.img_ave.copy()
+
+        # print('Quick hack in place - calibrating to median reflectance calibration coefficient')
+        # cali_coeff = np.nanmedian(cali_source.img_ave)
+
         self.img_ave = self.img_ave * cali_source.img_ave
         self.units = 'Reflectance'
         lght_err = self.img_std/lst_ave
@@ -950,8 +971,12 @@ class GeoCalImage(Image):
 
         # refine corner locations
         if self.all_corners:
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 24, 0.001)
             corners = cv2.cornerSubPix(gray, corners, (5,5), (-1,-1), criteria)
+
+            if corners[0][0][0] < corners[-1][0][0]:
+                # corners are in the wrong order, flip them
+                corners = np.flip(corners, axis=0)
 
             if self.roi:
                 corners[:,:,0]+=self.roiy
@@ -2380,15 +2405,18 @@ def load_sample(
         smpl.image_load()
         print(f'Loading {subject}: {smpl.camera} ({int(smpl.cwl)} nm)')
 
-        if dark_path is not None:
+        if isinstance(dark_path, Path):
             dark_smpl = DarkImage(dark_path, channel)
             dark_smpl.image_load()
             # Check exposure times are equal
             light_exp = smpl.exposure
             dark_exp = dark_smpl.exposure
-            if light_exp != dark_exp:
+            if not np.isclose(light_exp, dark_exp, atol=0.00001):
                 raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
             # subtract the dark frame
+            smpl.dark_subtract(dark_smpl)
+        elif isinstance(dark_path, dict):
+            dark_smpl = dark_path[channel]            
             smpl.dark_subtract(dark_smpl)
 
         # show
@@ -2643,7 +2671,7 @@ def plot_roi_reflectance(
     channels = list(refl_imgs.keys())
     for channel in channels:
         refl_img = refl_imgs[channel]
-        mean, std, mean_of_img_std, wt_mean, wt_std, n_pix = refl_img.image_stats(polyroi=True)
+        mean, std, mean_of_img_std, wt_mean, wt_std, n_pix = refl_img.image_stats(roi=True, polyroi=True)
         cwl = refl_img.cwl
         cwls.append(cwl)
         means.append(mean)
@@ -2921,17 +2949,17 @@ def build_scene_directory(
     prod_path = Path(scene_path, 'products')
     prod_path.mkdir(exist_ok=True)
 
-    # make a symlink to the camera_config.csv file
-    camera_config_path = Path(src_scene_path, '..', 'camera_config.csv').resolve()
-    if camera_config_path.exists():
-        camera_config_link = Path(scene_path, '..', '..', 'calibration', 'camera_config.csv').resolve()
-        if not camera_config_link.exists():
-            try:
-                camera_config_link.symlink_to(camera_config_path, target_is_directory=False)
-            except OSError:
-                copy(camera_config_path, camera_config_link)
-    else:
-        raise ValueError(f'Camera config file does not exist: {camera_config_path}')
+    # # make a symlink to the camera_config.csv file
+    # camera_config_path = Path(src_scene_path, '..', 'camera_config.csv').resolve()
+    # if camera_config_path.exists():
+    #     camera_config_link = Path(scene_path, '..', '..', 'calibration', 'camera_config.csv').resolve()
+    #     if not camera_config_link.exists():
+    #         try:
+    #             camera_config_link.symlink_to(camera_config_path, target_is_directory=False)
+    #         except OSError:
+    #             copy(camera_config_path, camera_config_link)
+    # else:
+    #     raise ValueError(f'Camera config file does not exist: {camera_config_path}')
 
     return raw_path, dark_path
 
@@ -2947,14 +2975,21 @@ def load_geometric_calibration(
     :return: Dictionary of geometric correction LightImages
     :rtype: Dict
     """    
-    channels = sorted(list(scene_path.glob('[!._]*')))
+    # test scene directory exists
+    if not scene_path.exists():
+        raise FileNotFoundError(f'Could not find {scene_path}')
+    # subject = scene_path.name
+    # channels = sorted(list(scene_path.glob('[!.]*')))
+    channels = sorted(list(next(os.walk(scene_path))[1]))
+
+
+    # channels = sorted(list(scene_path.glob('[!._]*')))
     geocs = {}
     if display:
         fig, ax = grid_plot('Geometric Calibration Target')
         if caption is not None:
             grid_caption(caption)
-    for channel_path in channels:
-        channel = channel_path.name
+    for channel in channels:
         # load the geometric calibration images
         geoc = LightImage(scene_path, channel)
         geoc.image_load()
