@@ -11,6 +11,7 @@ from collections import OrderedDict
 import cv2
 # import dict2xml
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from matplotlib import colors
 import matplotlib as mpl
 import numpy as np
@@ -19,10 +20,27 @@ from roipoly import RoiPoly, MultiRoi
 import scipy
 from shutil import copytree, copy
 import tifffile as tiff
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Union
 import orochi_sim_ctrl as osc
 
 FIG_W = 10 # figure width in inches
+
+WIN_S = 100
+WIN_H = int(WIN_S/2)
+X_TRIM = -28
+Y_TRIM = 64
+CNTR = [int(1920/2)-WIN_H+X_TRIM, int(1200/2)-WIN_H+Y_TRIM]
+OFFSET = 275
+WINDOWS = {
+    0: [ CNTR[0]-OFFSET, CNTR[1], WIN_S, WIN_S],
+    1: [ CNTR[0]-OFFSET, CNTR[1]-OFFSET, WIN_S, WIN_S],
+    2: [ CNTR[0]+OFFSET, CNTR[1]+OFFSET, WIN_S, WIN_S],
+    3: [ CNTR[0], CNTR[1]-OFFSET, WIN_S, WIN_S],
+    4: [ CNTR[0]+OFFSET, CNTR[1], WIN_S, WIN_S],
+    5: [ CNTR[0], CNTR[1]+OFFSET, WIN_S, WIN_S],
+    6: [ CNTR[0]-OFFSET, CNTR[1]+OFFSET, WIN_S, WIN_S],
+    7: [ CNTR[0]+OFFSET, CNTR[1]-OFFSET, WIN_S, WIN_S]
+}
 
 class Image:
     """Super class for handling image import and export.
@@ -49,12 +67,17 @@ class Image:
         self.roiy = None
         self.roiw = None
         self.roih = None
+        self.winx = None
+        self.winy = None
+        self.winw = None
+        self.winh = None
         self.roi = roi
         self.polyroi = None
         self.units = ''
         self.n_imgs = None
         self.img_ave = None
-        self.img_std = None    
+        self.img_std = None 
+        self.dif_img = None   
 
     def image_load(self, n_imgs: int=None, mode: str='mean', stack: np.ndarray=None) -> None:
         """Load images from the subject directory for the given type,
@@ -102,6 +125,10 @@ class Image:
             self.roiy = cam_props['roiy']
             self.roiw = cam_props['roiw']
             self.roih = cam_props['roih']
+            self.winx = WINDOWS[self.camera][1]
+            self.winy = WINDOWS[self.camera][0]
+            self.winw = WINDOWS[self.camera][3]
+            self.winh = WINDOWS[self.camera][2]
 
         img_stk = np.dstack(img_list)
         # average stack
@@ -157,7 +184,7 @@ class Image:
         self.img_std = self.img_std / self.exposure # assume exposure err. negl.
         self.units = 'DN/s'
 
-    def set_roi(self, threshold: int=None) -> None:
+    def set_roi(self, threshold: int=None, roi_size: int=None, roi_params: Tuple=None) -> None:
         """Set a rectangular region of interest
         """
         if self.roi:
@@ -167,17 +194,28 @@ class Image:
 
         # if not 8 bit convert for display
         if img.dtype != np.uint8:
-            img = np.floor(img/16).astype(np.uint8)    
+            img = np.floor(img * 255/np.nanmax(img)).astype(np.uint8)    
 
-        roi = cv2.selectROI(f'ROI Selection: {self.camera}_{self.cwl}', img, showCrosshair=True)
+        if roi_params is None:
+            roi = cv2.selectROI(f'ROI Selection: {self.camera}_{self.cwl}', img, showCrosshair=True)
+        else:
+            roi = roi_params
 
         # update the ROI
         self.roix = int(roi[1])
-        self.roiy = int(roi[0])
-        self.roiw = int(roi[3])
-        self.roih = int(roi[2])
+        self.roiy = int(roi[0])        
+        if roi_size is not None:
+            self.roiw = roi_size
+            self.roih = roi_size
+        else:
+            self.roiw = int(roi[3])
+            self.roih = int(roi[2])
+
+        print(f'{self.channel} ROI set to: top-left corner:({self.roix}, {self.roiy}), w: {self.roiw} h: {self.roih}')
 
         cv2.destroyAllWindows()
+
+        return [self.roiy, self.roix, self.roih, self.roiw]
 
     def set_polyroi(self, threshold: int=None, roi: bool=False) -> None:
         """Set an arbitrary polygon region of interest
@@ -207,24 +245,27 @@ class Image:
         print(f'Number of pixels in {self.channel} mask: {np.sum(roi_mask)}')
         self.polyroi = roi_mask
 
-    def image_stats(self, roi: bool=False, polyroi: bool=False) -> None:
+    def image_stats(self, roi: bool=False, polyroi: bool=False) -> Tuple:
         """Print image statistics
         """
         if polyroi:
             if roi:
                 img = self.roi_image()[self.polyroi]
-            else:
-                img = self.img_ave[self.polyroi]
-        if polyroi:
-            if roi:
                 std = self.roi_std()[self.polyroi]
             else:
+                img = self.img_ave[self.polyroi]
                 std = self.img_std[self.polyroi]
+        elif roi:
+            img = self.roi_image()
+            std = self.roi_std()
+        else:
+            img = self.img_ave
+            std = self.img_std
         img_ave_mean = np.nanmean(img, where=np.isfinite(img))
         img_ave_std = np.nanstd(img, where=np.isfinite(img))
         img_std_mean = np.nanmean(std, where=np.isfinite(img))
 
-        n_pixels = len(np.isfinite(img))
+        n_pixels = len(np.isfinite(img.flatten()))
 
         # weighted average
         ma_img = np.ma.array(img, mask=(np.isnan(img) * ~np.equal(std, 0.0))) # mask nans
@@ -240,11 +281,37 @@ class Image:
 
     def image_display(self,
                       ax: object=None, histo_ax: object=None,
-                      noise: bool=False, snr: bool=False,
+                      noise: bool=False, snr: bool=False, dif_img: bool=False,
                       threshold: float=None,
-                      roi: bool=False, polyroi: bool=False,
+                      draw_roi: bool=False, polyroi: bool=False,
+                      window: bool=False,
+                      context: object=None,
                       vmin: float=None, vmax: float=None) -> None:
         """Display the image mean and standard deviation in one frame.
+
+        :param ax: image axis object, defaults to None
+        :type ax: object, optional
+        :param histo_ax: histogram axis object, defaults to None
+        :type histo_ax: object, optional
+        :param noise: use the noise image, defaults to False
+        :type noise: bool, optional
+        :param snr: use the SNR image, defaults to False
+        :type snr: bool, optional
+        :param threshold: set all pixels below this value to NaN, defaults to None
+        :type threshold: float, optional
+        :param draw_roi: draw the current ROI, defaults to False
+        :type roi: bool, optional
+        :param polyroi: set all values outside polyROI to np.nan, defaults to False
+        :type polyroi: bool, optional
+        :param window: use the default window size, and if in conjunction with
+            ROI and polyroi, draw PolyROI and ROI on the image, defaults to False
+        :type window: bool, optional
+        :param context: context Image object, defaults to None
+        :type context: Image object, optional
+        :param vmin: minimum value for the colorbar, defaults to None
+        :type vmin: float, optional
+        :param vmax: maximum value for the colorbar, defaults to None
+        :type vmax: float, optional
         """
         # set the size of the window
         if ax is None:
@@ -253,33 +320,68 @@ class Image:
             histo_ax = axs[1]
             fig.suptitle(f'Subject: {self.subject} ({self.img_type})')
 
-        if roi:
-            img_ave = self.roi_image(polyroi)
-            img_std = self.roi_std(polyroi)
-        else:
-            img_ave = self.img_ave
-            img_std = self.img_std
+        # if roi:
+        #     img_ave = self.roi_image(polyroi)
+        #     img_std = self.roi_std(polyroi)
+        # else:
+        #     img_ave = self.img_ave
+        #     img_std = self.img_std
 
         if noise:
-            img = img_std
+            img = self.img_std
             label = self.units+ ' Noise'
         elif snr:
-            out = np.full(img_ave.shape, np.nan)
-            np.divide(img_ave, img_std, out=out, where=img_ave!=0)
+            out = np.full(self.img_ave.shape, np.nan)
+            np.divide(self.img_ave, self.img_std, out=out, where=self.img_ave!=0)
             img = out
             label = self.units+' SNR'
+        elif dif_img:
+            img = self.dif_img
+            label = 'Median Normalised Difference'
         else:
-            img = img_ave
+            img = self.img_ave
             label = self.units
 
         if threshold:
             img = np.where(img < threshold, np.nan, img)
 
-        ave = ax.imshow(img, origin='upper', vmin=vmin, vmax=vmax)
-        im_ratio = img.shape[0] / img.shape[1]
+        if window:
+            # set image coordinate limits
+            win_x = self.winx
+            win_y = self.winy
+            win_w = self.winw
+            win_h = self.winh
+        else:
+            win_x = 0
+            win_y = 0
+            win_w = self.width
+            win_h = self.height
+
+        if polyroi:
+            img = img.copy()
+            img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih] = np.where(self.polyroi, img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih], np.nan)
+
+        win_img = img[win_x:win_x+win_w, win_y:win_y+win_h]
+        extent = [win_y, win_y+win_h, win_x+win_w,win_x] # reversed, because of origin='upper'       
+
+        if dif_img:
+            cmap = 'seismic'
+            vmax = np.max(np.abs(win_img))
+            vmin = -vmax
+        else:
+            cmap = 'viridis'
+
+        ave = ax.imshow(win_img, origin='upper', vmin=vmin, vmax=vmax, extent=extent, cmap=cmap)
+
+        # draw window/ROI
+        if draw_roi:
+            rect = patches.Rectangle((self.roiy, self.roix), self.roih, self.roiw, linewidth=1, edgecolor='r', facecolor='none')        
+            ax.add_patch(rect)        
+
+        im_ratio = win_img.shape[0] / win_img.shape[1]
         cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=label)
 
-        col = channel_cols(self.camera)
+        col = channel_cols(self.camera)        
 
         if ('Noise' in label):
             cbar.formatter.set_powerlimits((0, 0))
@@ -294,7 +396,16 @@ class Image:
         ax.set_title(f'Device {self.camera} ({int(self.cwl)} nm)')
 
         if histo_ax is not None:
-            # add histogram
+            # add histogram      
+            if dif_img:
+                img = self.dif_img
+                title = f'Difference Histogram'
+            elif draw_roi:
+                img = img[self.roix:self.roix+self.roiw,self.roiy:self.roiy+self.roih]
+                title = f'ROI Histogram'            
+            elif window:
+                img = win_img
+                title = f'Window Histogram'
             counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)        
             histo_ax.hist(bins[:-1], bins, weights=counts,
                         label=f'{int(self.cwl)} nm ({self.camera})',
@@ -303,7 +414,15 @@ class Image:
             histo_ax.set_xlabel(label)
             # histo_ax.set_box_aspect(im_ratio)
             histo_ax.legend()
-            histo_ax
+            histo_ax.set_title(title)
+
+        if context is not None:
+            # draw context image
+            # normalise to maximum of the reflectance win_img          
+            context_img = context.img_ave
+            context_img = context_img[win_x:win_x+win_w, win_y:win_y+win_h]        
+            context_img = context_img * np.nanmax(win_img) / np.nanmax(context_img)
+            ax.imshow(context_img, origin='upper', cmap='gray', alpha=0.5, extent=extent)                        
 
         if ax is None:
             plt.tight_layout()
@@ -437,6 +556,7 @@ class LightImage(Image):
         Image.__init__(self,subject, channel, img_type)
         self.mtx, self.new_mtx, self.dist = self.load_calibration()        
         self.f_length = None
+        self.dif_img = None
 
     def dark_subtract(self, dark_image: DarkImage) -> None:
         
@@ -444,14 +564,14 @@ class LightImage(Image):
             lst_ave = self.img_ave.copy()
             self.img_ave -= dark_image
             self.img_ave = np.clip(self.img_ave, 0.0, None)
-            lght_err = self.img_std/lst_ave
+            lght_err = self.img_std/np.sqrt(self.n_imgs)
             drk_err = 0.0
         else:
             lst_ave = self.img_ave.copy()
             self.img_ave -= dark_image.img_ave        
             self.img_ave = np.clip(self.img_ave, 0.0, None) # clip 0s
-            lght_err = self.img_std/lst_ave
-            drk_err = (dark_image.img_std / np.sqrt(dark_image.n_imgs))/dark_image.img_ave
+            lght_err = self.img_std/np.sqrt(self.n_imgs)
+            drk_err = (dark_image.img_std / np.sqrt(dark_image.n_imgs))
 
         # quadrture sum the image noise with the dark signal noise
         self.img_std = np.sqrt((lght_err)**2 + (drk_err)**2)
@@ -564,6 +684,10 @@ class CalibrationImage(Image):
         self.roiw = source_image.roiw
         self.roih = source_image.roih
         self.roi = source_image.roi
+        self.winx = source_image.winx
+        self.winy = source_image.winy
+        self.winw = source_image.winw
+        self.winh = source_image.winh
         self.polyroi = source_image.polyroi
         self.units = source_image.units
         self.n_imgs = source_image.n_imgs
@@ -608,7 +732,7 @@ class CalibrationImage(Image):
         np.divide(self.reference_reflectance, self.img_ave, out=out, where=self.img_ave!=0)
         self.img_ave = out
         out = np.full(self.img_std.shape, np.nan)
-        np.divide((self.img_std/np.sqrt(self.n_imgs)), lst_ave, out=out, where=lst_ave!=0)
+        np.divide(self.img_std, lst_ave, out=out, where=lst_ave!=0)
         lght_err = out
         ref_err = self.reference_reflectance_err/self.reference_reflectance
         self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (ref_err)**2)
@@ -636,22 +760,36 @@ class ReflectanceImage(Image):
         self.roiw = source_image.roiw
         self.roih = source_image.roih
         self.roi = source_image.roi
+        self.winx = source_image.winx
+        self.winy = source_image.winy
+        self.winw = source_image.winw
+        self.winh = source_image.winh
         self.polyroi = source_image.polyroi
         self.units = source_image.units
         self.n_imgs = source_image.n_imgs
         self.img_ave = source_image.img_ave
         self.img_std = source_image.img_std
 
-    def calibrate_reflectance(self, cali_source):
+    def calibrate_reflectance(self, cali_source: Union[Image, Tuple]):
+
         lst_ave = self.img_ave.copy()
 
+        if isinstance(cali_source, tuple):
+            # if tuple, assume it is a calibration coefficient
+            cali_coeff = cali_source[0] # use the mean value
+            cali_std = cali_source[2] # use the mean of the standard deviations
+        else:
+            # otherwise, assume it is an Image object
+            cali_coeff = cali_source.img_ave
+            cali_std = cali_source.img_std
+            
         # print('Quick hack in place - calibrating to median reflectance calibration coefficient')
         # cali_coeff = np.nanmedian(cali_source.img_ave)
 
-        self.img_ave = self.img_ave * cali_source.img_ave
+        self.img_ave = self.img_ave * cali_coeff
         self.units = 'Reflectance'
         lght_err = self.img_std/lst_ave
-        cali_err = (cali_source.img_std / np.sqrt(cali_source.n_imgs ))/cali_source.img_ave
+        cali_err = cali_std/cali_coeff
         self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (cali_err)**2)
 
     def normalise(self, base: Image):
@@ -2124,9 +2262,6 @@ def load_reflectance_calibration(
         dark_cali = DarkImage(dark_path, channel)
         dark_cali.image_load()
         
-        # check the dark signal and DSNU
-        print(dark_cali.dark_signal())
-        
         # Check exposure times are equal
         light_exp = cali.exposure
         dark_exp = dark_cali.exposure
@@ -2138,9 +2273,9 @@ def load_reflectance_calibration(
         
         # show
         if display:
-            cali.image_display(roi=roi, ax=ax[cali.camera], histo_ax=ax[8], threshold=threshold[0])
-            cali.image_display(roi=roi, noise=True, ax=ax1[cali.camera], histo_ax=ax1[8], threshold=threshold[1])
-            cali.image_display(roi=roi, snr=True, ax=ax2[cali.camera], histo_ax=ax2[8], threshold=threshold[1])
+            cali.image_display(window=True, draw_roi=roi, ax=ax[cali.camera], histo_ax=ax[8], threshold=threshold[0])
+            cali.image_display(window=True, draw_roi=roi, noise=True, ax=ax1[cali.camera], histo_ax=ax1[8], threshold=threshold[1])
+            cali.image_display(window=True, draw_roi=roi, snr=True, ax=ax2[cali.camera], histo_ax=ax2[8], threshold=threshold[1])
         
         cali_imgs[channel] = cali
         if save_tiff:
@@ -2155,7 +2290,7 @@ def load_reflectance_calibration(
 
     return cali_imgs
 
-def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: float=0.25) -> Dict:
+def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: float=0.25, average: bool=False) -> Dict:
     """Calibrate the reflectance correction coefficients for images
     of the Spectralon reflectance target.
 
@@ -2184,11 +2319,16 @@ def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: 
         cali.correct_exposure()
         # compute calibration coefficient image
         cali_coeff = CalibrationImage(cali)
-        cali_coeff.mask_target(clip)
+        if clip is not None:
+            cali_coeff.mask_target(clip)
         cali_coeff.compute_reflectance_coefficients()
-        cali_coeff.image_display(roi=True, ax=ax[cali_coeff.camera], histo_ax=ax[8])
-        cali_coeff.image_display(roi=True, noise=True, ax=ax1[cali_coeff.camera], histo_ax=ax1[8])
-        cali_coeffs[channel] = cali_coeff
+            
+        cali_coeff.image_display(window=True, draw_roi=True, ax=ax[cali_coeff.camera], histo_ax=ax[8])
+        cali_coeff.image_display(window=True, draw_roi=True, noise=True, ax=ax1[cali_coeff.camera], histo_ax=ax1[8])
+        if average:
+            cali_coeffs[channel] = cali_coeff.image_stats(roi=True)
+        else:
+            cali_coeffs[channel] = cali_coeff
     show_grid(fig, ax)
     show_grid(fig1, ax1)
     return cali_coeffs
@@ -2421,9 +2561,9 @@ def load_sample(
 
         # show
         if display:
-            smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
-            smpl.image_display(roi=roi, noise=True, ax=ax1[smpl.camera], histo_ax=ax1[8], threshold=threshold[1])
-            smpl.image_display(roi=roi, snr=True, ax=ax2[smpl.camera], histo_ax=ax2[8], threshold=threshold[1])
+            smpl.image_display(window=True, draw_roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
+            smpl.image_display(window=True, draw_roi=roi, noise=True, ax=ax1[smpl.camera], histo_ax=ax1[8], threshold=threshold[1])
+            smpl.image_display(window=True, draw_roi=roi, snr=True, ax=ax2[smpl.camera], histo_ax=ax2[8], threshold=threshold[1])
         smpl_imgs[channel] = smpl
         if save_tiff:
             smpl.save_tiff(uint16=False)
@@ -2456,6 +2596,20 @@ def load_dark_frames(subject: str='sample', roi: bool=False, caption: Tuple[str,
     show_grid(fig, ax)
     show_grid(fig1, ax1)
     return dark_imgs
+
+def show_scene_difference(scene_1: Dict, scene_2: Dict):
+    channels = list(scene_1.keys())
+    title = 'Difference'
+    fig, ax = grid_plot(title)
+    for channel in channels:
+        smpl_1 = scene_1[channel]
+        smpl_2 = scene_2[channel]
+        diff = smpl_1.img_ave/(np.nanmedian(smpl_1.roi_image())) - smpl_2.img_ave/(np.nanmedian(smpl_2.roi_image()))        
+        # diff = smpl_1.img_ave - smpl_2.img_ave
+        smpl_1.dif_img = diff
+        smpl_1.image_display(window=True, draw_roi=False, ax=ax[smpl_1.camera], histo_ax=ax[8], dif_img=True)
+    show_grid(fig, ax)
+
 
 def get_exposures(smpl_imgs: Dict) -> pd.Series:
     """Show the exposures for each channel of the given set of channels.
@@ -2533,9 +2687,10 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict, caption: T
         reflectance[channel] = refl
     for channel in channels:
         refl = reflectance[channel]
-        refl.image_display(roi=True, ax=ax[refl.camera], histo_ax=ax[8], vmin=0.0, vmax=vmax)
-        refl.image_display(roi=True, noise=True, ax=ax1[refl.camera], histo_ax=ax1[8])
-        refl.image_display(roi=True, snr=True, ax=ax2[refl.camera], histo_ax=ax2[8], vmin=0.0, vmax=300)
+        context = smpl_imgs[channel]
+        refl.image_display(window=True, draw_roi=True, ax=ax[refl.camera], histo_ax=ax[8], vmin=0.0, vmax=vmax, context=context)
+        refl.image_display(window=True, draw_roi=True, noise=True, ax=ax1[refl.camera], histo_ax=ax1[8], context=context)
+        refl.image_display(window=True, draw_roi=True, snr=True, ax=ax2[refl.camera], histo_ax=ax2[8], context=context)
     show_grid(fig, ax)
     show_grid(fig1, ax1)
     show_grid(fig2, ax2)
@@ -2759,6 +2914,7 @@ def set_roi_mask(smpl_imgs: Dict, threshold: int=None, roi: bool=False) -> Dict:
     for channel in channels:
         smpl = smpl_imgs[channel]
         smpl.set_polyroi(threshold=threshold, roi=roi)
+    # display_rois(smpl_imgs, polyroi=True)
     return smpl_imgs
 
 def build_session_directory(session_path: Path) -> Dict:
@@ -3111,19 +3267,49 @@ def apply_coalignment(smpl_imgs: Dict, coals: Dict, caption: Tuple[str, str]=Non
     show_grid(fig1, ax1)
     return aligned_refl
 
-def set_channel_rois(smpl_imgs: Dict) -> Dict:
+def set_channel_rois(smpl_imgs: Dict, roi_size: int=None, roi_dict: Dict=None) -> Dict:
     """Set the region of interest on each channel of the given set of channels.
 
     :param smpl_imgs: Dictionary of LightImage objects
     :type smpl_imgs: Dict
+    :roi_size: Size of the region of interest, defaults to None
+    :type roi_size: int, optional
+    :roi_dict: Dictionary of region of interest parameters, defaults to None
+    :type roi_dict: Dict, optional
     :return: Dictionary of LightImage objects
     :rtype: Dict
     """
     channels = list(smpl_imgs.keys())
+    new_roi_dict = {}
     for channel in channels:
         smpl = smpl_imgs[channel]
-        smpl.set_roi()
-    return smpl_imgs
+        if roi_dict is not None:
+            roi_params = roi_dict[channel]
+        else:
+            roi_params = None
+        new_roi = smpl.set_roi(roi_size=roi_size, roi_params=roi_params)
+        new_roi_dict[channel] = new_roi
+    display_rois(smpl_imgs)
+    return new_roi_dict
+
+def display_rois(smpl_imgs: Dict, window: bool=True, draw_roi: bool=True, polyroi: bool=False) -> None:
+    """Display the region of interest of each channel in a grid plot.
+
+    :param smpl_imgs: Dictioanry of images to display
+    :type smpl_imgs: Dict
+    :param window: Use the default window to display the images, defaults to True
+    :type window: bool, optional
+    :param draw_roi: Draw the Region of Interest, defaults to True
+    :type draw_roi: bool, optional
+    :param polyroi: Draw the Polygon Region of Interest, defaults to False
+    :type polyroi: bool, optional
+    """    
+    channels = list(smpl_imgs.keys())
+    fig, ax = grid_plot('Region of Interest')
+    for channel in channels:
+        smpl = smpl_imgs[channel]
+        smpl.image_display(window=window, draw_roi=draw_roi, polyroi=polyroi, ax=ax[smpl.camera], histo_ax=ax[8])
+    show_grid(fig, ax)
 
 def export_images(smpl_imgs: Dict, uint8: bool=False, uint16: bool=False, roi: bool=False) -> None:
     """Export the image stack to tiff
