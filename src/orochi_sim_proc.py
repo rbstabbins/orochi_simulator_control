@@ -20,26 +20,26 @@ from roipoly import RoiPoly, MultiRoi
 import scipy
 from shutil import copytree, copy
 import tifffile as tiff
-from typing import Tuple, Dict, Union
+from typing import Tuple, Dict, Union, List
 import orochi_sim_ctrl as osc
 
 FIG_W = 10 # figure width in inches
 
 # set default Window/ROI Size information
-WIN_S = 100 # size of window in pixels
-X_TRIM = -28 # fine adjustment of the window centre
-Y_TRIM = 64 # fine adjustment of the window centre
-CNTR = [int(1920/2)-WIN_S+X_TRIM, int(1200/2)-WIN_S+Y_TRIM] # centre of the window
+WIN_S = 80 # size of window in pixels
+Y_TRIM = 100 # fine adjustment of the window centre
+X_TRIM = 20 # fine adjustment of the window centre
+CNTR = [(1200//2)-(WIN_S//2)+Y_TRIM, (1920//2)-(WIN_S//2)+X_TRIM] # centre of the window
 OFFSET = 275 # offset in pixels for a 10 cm camera displacement at 80 cm object distance
 WINDOWS = { # window coordinartes for each camera
-    0: [ CNTR[0]-OFFSET, CNTR[1], WIN_S, WIN_S],
+    0: [ CNTR[0], CNTR[1]-OFFSET, WIN_S, WIN_S],
     1: [ CNTR[0]-OFFSET, CNTR[1]-OFFSET, WIN_S, WIN_S],
     2: [ CNTR[0]+OFFSET, CNTR[1]+OFFSET, WIN_S, WIN_S],
-    3: [ CNTR[0], CNTR[1]-OFFSET, WIN_S, WIN_S],
-    4: [ CNTR[0]+OFFSET, CNTR[1], WIN_S, WIN_S],
-    5: [ CNTR[0], CNTR[1]+OFFSET, WIN_S, WIN_S],
-    6: [ CNTR[0]-OFFSET, CNTR[1]+OFFSET, WIN_S, WIN_S],
-    7: [ CNTR[0]+OFFSET, CNTR[1]-OFFSET, WIN_S, WIN_S]
+    3: [ CNTR[0]-OFFSET, CNTR[1], WIN_S, WIN_S],
+    4: [ CNTR[0], CNTR[1]+OFFSET, WIN_S, WIN_S],
+    5: [ CNTR[0]+OFFSET, CNTR[1], WIN_S, WIN_S],
+    6: [ CNTR[0]+OFFSET, CNTR[1]-OFFSET, WIN_S, WIN_S],
+    7: [ CNTR[0]-OFFSET, CNTR[1]+OFFSET, WIN_S, WIN_S]
 }
 
 class Image:
@@ -82,52 +82,61 @@ class Image:
         """Load images from the scene directory for the given type,
         populate properties, and compute averages and standard deviation.
         """
+
         # get list of images of given type in the scene directory
         files = list(self.scene_dir.glob('*'+self.img_type+'.tif'))
+        if files == []:
+            raise FileNotFoundError(f'Error: no {self.img_type} images found in {self.scene_dir}')
+        
         # set n_imgs
         if n_imgs == None:
             self.n_imgs = len(files)
         else:
             self.n_imgs = n_imgs
+
         self.units = 'Raw DN'
+
         img_list = []
-        if files == []:
-            raise FileNotFoundError(f'Error: no {self.img_type} images found in {self.scene_dir}')
+        
         for f, file in enumerate(files[:self.n_imgs]):
             try:
                 img = tiff.TiffFile(file)
-            except:
+            except ValueError:
                 print('bad file')
             img_arr = img.asarray()
             img_list.append(img_arr)
             meta = img.imagej_metadata
             self.camera = self.check_property(self.camera, meta['camera'])
             self.serial = self.check_property(self.serial, meta['serial'])
-            self.width = self.check_property(self.width, img_arr.shape[1])
-            self.height = self.check_property(self.height, img_arr.shape[0])
             self.cwl = self.check_property(self.cwl, meta['cwl'])
             self.fwhm = self.check_property(self.fwhm, meta['fwhm'])
             self.fnumber = self.check_property(self.fnumber, meta['f-number'])
             self.flength = self.check_property(self.flength, meta['f-length'])
             self.exposure = self.check_property(self.exposure, meta['exposure'])
             # try:
-            #     self.roix = self.check_property(self.roix, meta['roix'])
             #     self.roiy = self.check_property(self.roiy, meta['roiy'])
-            #     self.roiw = self.check_property(self.roiw, meta['roiw'])
+            #     self.roix = self.check_property(self.roix, meta['roix'])
             #     self.roih = self.check_property(self.roih, meta['roih'])
+            #     self.roiw = self.check_property(self.roiw, meta['roiw'])
             # except (KeyError, ValueError):
             # read the camera_config file to get the ROI
+
+            # check the dimensions, and check the x and y properties for inversion
+
+            self.height = self.check_property(self.height, img_arr.shape[0])
+            self.width = self.check_property(self.width, img_arr.shape[1])
             camera_info = osc.load_camera_config(Path(self.scene_dir, '..').resolve())
             cam_name = f'DMK 33GX249 {int(self.serial)}'
             cam_props = camera_info[cam_name]
-            self.roix = cam_props['roix']
-            self.roiy = cam_props['roiy']
-            self.roiw = cam_props['roiw']
-            self.roih = cam_props['roih']
-            self.winx = WINDOWS[self.camera][1]
+            # currently roiy and roix labels are inverted - so correct on load in here
+            self.roiy = cam_props['roix']
+            self.roix = cam_props['roiy']
+            self.roih = cam_props['roiw']
+            self.roiw = cam_props['roih']
             self.winy = WINDOWS[self.camera][0]
-            self.winw = WINDOWS[self.camera][3]
+            self.winx = WINDOWS[self.camera][1]
             self.winh = WINDOWS[self.camera][2]
+            self.winw = WINDOWS[self.camera][3]
 
         img_stk = np.dstack(img_list)
         # average stack
@@ -144,20 +153,25 @@ class Image:
     def roi_image(self, polyroi: bool=False) -> np.ndarray:
         """Returns the region of interest of the image.
         """
-        roi_img = self.img_ave[self.roix:self.roix+self.roiw,self.roiy:self.roiy+self.roih]
-
         if polyroi:
-            roi_img = np.where(self.polyroi, roi_img, np.nan)
+            img = np.where(self.polyroi, self.img_ave, np.nan)
+        else:
+            img = self.img_ave
+
+        roi_img = img[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw]
+
         return roi_img
 
     def roi_std(self, polyroi: bool=False) -> np.ndarray:
         """Returns the region of interest of the error image.
         """
-        roi_img = self.img_std[self.roix:self.roix+self.roiw,
-                            self.roiy:self.roiy+self.roih]
-
         if polyroi:
-            roi_img = np.where(self.polyroi, roi_img, np.nan)
+            img = np.where(self.polyroi, self.img_std, np.nan)
+        else:
+            img = self.img_std
+
+        roi_img = img[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw]
+
         return roi_img
 
     def check_property(self, obj_prop, metadata):
@@ -183,7 +197,11 @@ class Image:
         self.img_std = self.img_std / self.exposure # assume exposure err. negl.
         self.units = 'DN/s'
 
-    def set_roi(self, threshold: int=None, roi_size: int=None, roi_params: Tuple=None) -> None:
+    def set_roi(self, 
+                threshold: int=None, 
+                roi_size: int=None, 
+                roi_params: Tuple=None,
+                cross_hair_is_centre: bool=False) -> None:
         """Set a rectangular region of interest
         """
         if self.roi:
@@ -196,67 +214,96 @@ class Image:
             img = np.floor(img * 255/np.nanmax(img)).astype(np.uint8)    
 
         if roi_params is None:
-            roi = cv2.selectROI(f'ROI Selection: {self.camera}_{self.cwl}', img, showCrosshair=True)
+            title = f'ROI Selection: {self.camera}_{self.cwl}'            
+            roi = cv2.selectROI(title, img, showCrosshair=True) # roi output is (x,y,w,h)
+            # switch order of roi
+            roi = (roi[1], roi[0], roi[3], roi[2])           
+            cv2.destroyWindow(title)            
         else:
             roi = roi_params
 
-        # update the ROI
-        self.roix = int(roi[1])
-        self.roiy = int(roi[0])        
         if roi_size is not None:
             self.roiw = roi_size
             self.roih = roi_size
+            # update the ROI
+            if cross_hair_is_centre:
+                self.roiy = int(roi[0]) - self.roih//2
+                self.roix = int(roi[1]) - self.roiw//2      
+            else:
+                self.roiy = int(roi[0])        
+                self.roix = int(roi[1])
         else:
-            self.roiw = int(roi[3])
+            self.roiy = int(roi[0])
+            self.roix = int(roi[1])
             self.roih = int(roi[2])
+            self.roiw = int(roi[3])
+            if cross_hair_is_centre:
+                print('Using manual ROI: cross_hair_is_centre = True ignored')
 
-        print(f'{self.channel} ROI set to: top-left corner:({self.roix}, {self.roiy}), w: {self.roiw} h: {self.roih}')
-
-        cv2.destroyAllWindows()
+        print(f'{self.channel} ROI set to: top-left corner:(y: {self.roiy}, x: {self.roix}), h: {self.roih} w: {self.roiw}')
 
         return [self.roiy, self.roix, self.roih, self.roiw]
 
     def set_polyroi(self, threshold: int=None, roi: bool=False) -> None:
         """Set an arbitrary polygon region of interest
         """
-
-        if self.roi or roi:
-            img = self.roi_image()
-        else:
-            img = self.img_ave
         
         if threshold is None:
+
             default_backend = mpl.get_backend()
             mpl.use('Qt5Agg')  # need this backend for RoiPoly to work
+            
             fig = plt.figure(figsize=(10,10), dpi=80)
-            plt.imshow(img, origin='upper')
+            if roi:
+                img = self.roi_image()
+                extent = [self.roix, self.roix+self.roiw, self.roiy+self.roih, self.roiy] # coordinates of (left, right, bottom, top)
+            else:
+                img = self.img_ave
+                extent = [self.winx, self.winx+self.winw, self.winy+self.winh, self.winy] # coordinates of (left, right, bottom, top)
+            plt.imshow(img, origin='upper', extent=extent, cmap='viridis')
             plt.title(f'{self.channel}')
 
             my_roi = RoiPoly(fig=fig) # draw new ROI in red color
             plt.close()
             # Get the masks for the ROIs
-            outline_mask = my_roi.get_mask(img)
+            outline_mask = my_roi.get_mask(self.img_ave) # flip the coordinates
             roi_mask = outline_mask # np.flip(outline_mask, axis=0)
 
             mpl.use(default_backend)  # reset backend
         else:
-            roi_mask = img > threshold
+            roi_mask = self.img_ave > threshold
+
         print(f'Number of pixels in {self.channel} mask: {np.sum(roi_mask)}')
         self.polyroi = roi_mask
+
+    def get_roi_coords(self, polyroi: bool=True) -> Tuple[List[int], List[int]]:
+        """Get the coordinates of the ROI, including the polyroi if set.
+
+        :param polyroi: if True, use the polyroi, defaults to True
+        :type polyroi: bool, optional
+        :return: Lists of the y and x coordinates
+        :rtype: Tuple
+        """        
+        if polyroi:
+            if self.polyroi is None:
+                raise ValueError('Error: polyroi not set')
+            else:
+                y, x = np.where(self.polyroi)
+        else:
+            ys = list(range(self.roiy,self.roiy+self.roih))
+            xs = list(range(self.roix,self.roix+self.roiw))
+            y = [y_p for x_p in xs for y_p in ys]
+            x = [x_p for x_p in xs for y_p in ys]
+
+        return y, x
+
 
     def image_stats(self, roi: bool=False, polyroi: bool=False) -> Tuple:
         """Print image statistics
         """
-        if polyroi:
-            if roi:
-                img = self.roi_image()[self.polyroi]
-                std = self.roi_std()[self.polyroi]
-            else:
-                img = self.img_ave[self.polyroi]
-                std = self.img_std[self.polyroi]
-        elif roi:
-            img = self.roi_image()
-            std = self.roi_std()
+        if roi:
+            img = self.roi_image(polyroi)
+            std = self.roi_std(polyroi)
         else:
             img = self.img_ave
             std = self.img_std
@@ -264,23 +311,16 @@ class Image:
         img_ave_std = np.nanstd(img, where=np.isfinite(img))
         img_std_mean = np.nanmean(std, where=np.isfinite(img))
 
+        # get the pixel coordinates and values
+        y,x = self.get_roi_coords(polyroi)
+
         n_pixels = len(np.isfinite(img.flatten()))
 
-        # weighted average
-        ma_img = np.ma.array(img, mask=(np.isnan(img) * ~np.equal(std, 0.0))) # mask nans
-        # mask where standard deviation is zero
-        ma_std = np.ma.array(std, mask=(np.isnan(img) * ~np.equal(std, 0.0)))
-        img_ave_wt_mean, wt_sum = np.ma.average(ma_img, weights=1.0/ma_std**2, returned=True)
-        img_ave_wt_std = np.sqrt(1.0/wt_sum)
-
-        img_ave_wt_var = np.ma.average((ma_img - img_ave_wt_mean)**2, weights=1.0/ma_std**2)
-        img_ave_wt_std = np.sqrt(img_ave_wt_var)
-
-        return img_ave_mean, img_ave_std, img_std_mean, img_ave_wt_mean, img_ave_wt_std, n_pixels
+        return img_ave_mean, img_ave_std, img_std_mean, n_pixels, (y,x)
 
     def image_display(self,
+                      statistic: str='signal',
                       ax: object=None, histo_ax: object=None,
-                      noise: bool=False, snr: bool=False, dif_img: bool=False,
                       threshold: float=None,
                       draw_roi: bool=False, polyroi: bool=False,
                       window: bool=False,
@@ -326,15 +366,15 @@ class Image:
         #     img_ave = self.img_ave
         #     img_std = self.img_std
 
-        if noise:
+        if statistic=='noise':
             img = self.img_std
             label = self.units+ ' Noise'
-        elif snr:
+        elif statistic=='snr':
             out = np.full(self.img_ave.shape, np.nan)
             np.divide(self.img_ave, self.img_std, out=out, where=self.img_ave!=0)
             img = out
             label = self.units+' SNR'
-        elif dif_img:
+        elif statistic=='dif_img':
             img = self.dif_img
             label = 'Median Normalised Difference'
         else:
@@ -346,24 +386,24 @@ class Image:
 
         if window:
             # set image coordinate limits
-            win_x = self.winx
             win_y = self.winy
-            win_w = self.winw
+            win_x = self.winx
             win_h = self.winh
+            win_w = self.winw
         else:
-            win_x = 0
             win_y = 0
-            win_w = self.width
+            win_x = 0
             win_h = self.height
+            win_w = self.width
 
         if polyroi:
             img = img.copy()
-            img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih] = np.where(self.polyroi, img[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih], np.nan)
+            img = np.where(self.polyroi, img, np.nan)
 
-        win_img = img[win_x:win_x+win_w, win_y:win_y+win_h]
-        extent = [win_y, win_y+win_h, win_x+win_w,win_x] # reversed, because of origin='upper'       
+        win_img = img[win_y:win_y+win_h, win_x:win_x+win_w]
+        extent = [win_x, win_x+win_w, win_y+win_h, win_y] # coordinates of (left, right, bottom, top)
 
-        if dif_img:
+        if statistic=='dif_img':
             cmap = 'seismic'
             vmax = np.max(np.abs(win_img))
             vmin = -vmax
@@ -374,7 +414,7 @@ class Image:
 
         # draw window/ROI
         if draw_roi:
-            rect = patches.Rectangle((self.roiy, self.roix), self.roih, self.roiw, linewidth=1, edgecolor='r', facecolor='none')        
+            rect = patches.Rectangle((self.roix, self.roiy), self.roiw, self.roih, linewidth=1, edgecolor='r', facecolor='none')        
             ax.add_patch(rect)        
 
         im_ratio = win_img.shape[0] / win_img.shape[1]
@@ -396,11 +436,11 @@ class Image:
 
         if histo_ax is not None:
             # add histogram      
-            if dif_img:
+            if statistic=='dif_img':
                 img = self.dif_img
                 title = f'Difference Histogram'
             elif draw_roi:
-                img = img[self.roix:self.roix+self.roiw,self.roiy:self.roiy+self.roih]
+                img = img[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw]
                 title = f'ROI Histogram'            
             elif window:
                 img = win_img
@@ -419,7 +459,7 @@ class Image:
             # draw context image
             # normalise to maximum of the reflectance win_img          
             context_img = context.img_ave
-            context_img = context_img[win_x:win_x+win_w, win_y:win_y+win_h]        
+            context_img = context_img[win_y:win_y+win_h, win_x:win_x+win_w]
             context_img = context_img * np.nanmax(win_img) / np.nanmax(context_img)
             ax.imshow(context_img, origin='upper', cmap='gray', alpha=0.5, extent=extent)                        
 
@@ -435,9 +475,9 @@ class Image:
 
     def save_image(self, 
                    float32: bool=True,
-                   uint8: bool=False,
-                   uint16: bool=False,
-                   fits: bool=False) -> None:
+                   uint8: bool=True,
+                   uint16: bool=True,
+                   fits: bool=True) -> None:
         """Save the image and error image to the formats indicated with the flags.
 
         :param float32: output TIFF file in Float 64, defaults to True
@@ -449,7 +489,7 @@ class Image:
         :param fits: output FITS file in Float 64, defaults to False
         :type fits: bool, optional
         """    
-        print('Saving images to', end='')    
+        print(f'Saving {self.channel} {self.scene} images to', end='')    
         if float32:            
             # write image with float 64 method            
             output = 'float32'
@@ -485,6 +525,20 @@ class Image:
         img_ave = self.img_ave.copy()
         img_err = self.img_std.copy()
 
+        metadata={
+                    'scene': self.scene,
+                    'image-type': self.img_type,
+                    'camera': self.camera,
+                    'serial': self.serial,
+                    'cwl': self.cwl,
+                    'fwhm': self.fwhm,
+                    'f-number': self.fnumber,
+                    'f-length': self.flength,
+                    'exposure': self.exposure,
+                    'units': self.units,
+                    'n_imgs': self.n_imgs
+                }
+
         if dtype == 'float32':
             img_ave = img_ave.astype(np.float32)
             img_err = img_err.astype(np.float32)
@@ -492,6 +546,7 @@ class Image:
             if self.img_type == 'rfl':
                 img_ave = np.floor(200*img_ave).astype(np.uint8)
                 img_err = np.floor(200*img_err).astype(np.uint8)
+                metadata['units'] = f'{self.units} x200'
             else:
                 img_ave = np.floor(img_ave/16).astype(np.uint8)
                 img_err = np.floor(img_err/16).astype(np.uint8)
@@ -499,24 +554,11 @@ class Image:
             if self.img_type == 'rfl':
                 img_ave = np.floor(10000*img_ave).astype(np.uint16)
                 img_err = np.floor(10000*img_err).astype(np.uint16)
+                metadata['units'] = f'{self.units} x10000'
             else:
                 img_ave = np.floor(img_ave).astype(np.uint16)
                 img_err = np.floor(img_err).astype(np.uint16)
         
-        metadata={
-            'scene': self.scene,
-            'image-type': self.img_type,
-            'camera': self.camera,
-            'serial': self.serial,
-            'cwl': self.cwl,
-            'fwhm': self.fwhm,
-            'f-number': self.fnumber,
-            'f-length': self.flength,
-            'exposure': self.exposure,
-            'units': self.units,
-            'n_imgs': self.n_imgs
-        }
-
         cwl_str = str(int(self.cwl))
         cam_num = str(self.camera) 
         filename = cam_num+'_'+cwl_str+'_'+self.img_type
@@ -588,104 +630,6 @@ class Image:
         hdu.header['exposure'] = self.exposure
         hdu.header['units'] = self.units
         hdu.writeto(img_err_file, overwrite=True)
-
-    # def save_image(self, uint8: bool=False, uint16: bool=False):
-    #     """Save the average and error images to TIF files"""
-    #     # TODO update to control conversion to string, and ensure high precision for exposure time
-
-    #     # prepare metadata
-    #     metadata={
-    #         'scene': self.scene,
-    #         'image-type': self.img_type,
-    #         'camera': self.camera,
-    #         'serial': self.serial,
-    #         'cwl': self.cwl,
-    #         'fwhm': self.fwhm,
-    #         'f-number': self.fnumber,
-    #         'f-length': self.flength,
-    #         'exposure': self.exposure,
-    #         'units': self.units,
-    #         'n_imgs': self.n_imgs
-    #     }
-    #     cwl_str = str(int(self.cwl))
-    #     cam_num = str(self.camera)        
-
-    #     # prepare filename and output directory
-    #     name = 'mean'
-    #     filename = cam_num+'_'+cwl_str+'_'+name+'_'+self.img_type
-    #     product_dir = self.products_dir
-    #     product_dir.mkdir(parents=True, exist_ok=True)
-
-    #     tiffs_dir = Path(product_dir, 'tiffs')
-    #     fits_dir = Path(product_dir, 'fits')
-    #     tiffs_dir.mkdir(parents=True, exist_ok=True)
-    #     fits_dir.mkdir(parents=True, exist_ok=True)
-        
-    #     if self.roi:
-    #         out_img = self.roi_image(self.polyroi)
-    #         err_img = self.roi_std(self.polyroi)
-    #     else:
-    #         out_img = self.img_ave
-    #         err_img = self.img_std
-
-    #     # out_img = np.clip(out_img, 0.0, None) # clip to ensure non-negative
-
-    #     if uint8:
-    #         # convert to 8-bit
-    #         out_img = np.floor(out_img/16).astype(np.uint8)
-    #     elif uint16:
-    #         # convert to 16-bit
-    #         out_img = np.floor(out_img).astype(np.uint16)
-    #     else:
-    #         out_img = out_img.astype(np.float32) # set data type to float 32
-
-    #     # write camera properties to TIF using ImageJ metadata        
-    #     img_file =str(Path(tiffs_dir, filename).with_suffix('.tif'))
-    #     tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
-    #     print(f'Mean image written to {img_file}')
-
-    #     # if FITS is true, save to FITs file also
-    #     img_file =str(Path(fits_dir, filename).with_suffix('.fits'))
-
-    #     hdu = fitsio.PrimaryHDU(out_img)
-    #     hdu.header['scene'] = self.scene
-    #     hdu.header['type'] = self.img_type
-    #     hdu.header['camera'] = int(self.camera)
-    #     hdu.header['serial'] = int(self.serial)
-    #     hdu.header['cwl'] = self.cwl
-    #     hdu.header['fwhm'] = self.fwhm
-    #     hdu.header['f-number'] = self.fnumber
-    #     hdu.header['f-length'] = self.flength
-    #     hdu.header['exposure'] = self.exposure
-    #     hdu.header['units'] = self.units
-    #     hdu.writeto(img_file, overwrite=True)
-
-    #     # error image
-    #     name = 'error'
-    #     filename = cam_num+'_'+cwl_str+'_'+name+'_'+self.img_type
-    #     img_file =str(Path(tiffs_dir, filename).with_suffix('.tif'))
-    #     # write camera properties to TIF using ImageJ metadata
-    #     # clip to ensure nonzero
-    #     # err_img = np.clip(err_img, 0.0, None)
-    #     # set data type to float 32
-    #     err_img = err_img.astype(np.float32) 
-    #     tiff.imwrite(img_file, err_img, imagej=True, metadata=metadata)
-    #     print(f'Error image written to {img_file}')
-
-    #     # if FITS is true, save to FITs file also
-    #     img_file =str(Path(fits_dir, filename).with_suffix('.fits'))
-    #     hdu = fitsio.PrimaryHDU(err_img)
-    #     hdu.header['scene'] = self.scene
-    #     hdu.header['type'] = self.img_type
-    #     hdu.header['camera'] = int(self.camera)
-    #     hdu.header['serial'] = int(self.serial)
-    #     hdu.header['cwl'] = self.cwl
-    #     hdu.header['fwhm'] = self.fwhm
-    #     hdu.header['f-number'] = self.fnumber
-    #     hdu.header['f-length'] = self.flength
-    #     hdu.header['exposure'] = self.exposure
-    #     hdu.header['units'] = self.units
-    #     hdu.writeto(img_file, overwrite=True)
 
 class DarkImage(Image):
     """Class for handling Dark Images, inherits Image class.
@@ -2154,16 +2098,20 @@ class StereoPair():
         ax.set_title(title)
         # TODO show the plot if the ax was none
 
-def load_sample(
+def load_scene(
         scene_path: Path, 
         dark_path: Path=None, 
         product_path: Path=None,
         img_type: str='img',
-        display: bool=True, 
-        roi: bool=False, 
-        caption: str=None, 
-        threshold: Tuple[float,float]=(None,None),
-        save_image: bool=False) -> Dict:
+        display: bool=True,
+        window: bool=True, 
+        draw_roi: bool=True,        
+        caption: str=None,         
+        export_scene: bool=True,
+        float32: bool=True, 
+        uint16: bool=True, 
+        uint8: bool=False, 
+        fits: bool=True) -> Dict:
     """Load images of the sample.
 
     :param scene_path: Directory of sample images
@@ -2183,61 +2131,111 @@ def load_sample(
     :return: Dictionary of sample LightImages (units of DN)
     :rtype: Dict
     """
+    
     # test scene directory exists
     if not scene_path.exists():
         raise FileNotFoundError(f'Could not find {scene_path}')
-    scene = scene_path.name
-    # channels = sorted(list(scene_path.glob('[!.]*')))
     channels = sorted(list(next(os.walk(scene_path))[1]))
+
     # if products in channels list, then drop products
     if 'products' in channels:
         channels.remove('products')
-    smpl_imgs = {} # store the calibration objects in a dictionary
-    title = f'{scene} Images'
-    if display:
-        fig, ax = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[0])
-        title = f'{scene} Images Noise'
-        fig1, ax1 = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[1])
-        title = f'{scene} Images SNR'
-        fig2, ax2 = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[2])
+    
+    scene = scene_path.name
+    
+    scene_imgs = {} # store the scene objects in a dictionary
     for channel in channels:
-        smpl = LightImage(scene_path, product_path, channel, img_type=img_type)
-        smpl.image_load()
-        print(f'Loading {scene}: {smpl.camera} ({int(smpl.cwl)} nm)')
+        chnl_scene = LightImage(scene_path, product_path, channel, img_type=img_type)
+        chnl_scene.image_load()
+        print(f'Loading {scene}: {chnl_scene.camera} ({int(chnl_scene.cwl)} nm)')
 
         if isinstance(dark_path, Path):
             dark_smpl = DarkImage(dark_path, product_path, channel)
             dark_smpl.image_load()
             # Check exposure times are equal
-            light_exp = smpl.exposure
+            light_exp = chnl_scene.exposure
             dark_exp = dark_smpl.exposure
             if not np.isclose(light_exp, dark_exp, atol=0.00001):
                 raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
             # subtract the dark frame
-            smpl.dark_subtract(dark_smpl)
+            chnl_scene.dark_subtract(dark_smpl)
         elif isinstance(dark_path, dict):
             dark_smpl = dark_path[channel]            
-            smpl.dark_subtract(dark_smpl)
+            chnl_scene.dark_subtract(dark_smpl)
+            
+        scene_imgs[channel] = chnl_scene
 
-        # show
-        if display:
-            smpl.image_display(window=True, draw_roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
-            smpl.image_display(window=True, draw_roi=roi, noise=True, ax=ax1[smpl.camera], histo_ax=ax1[8], threshold=threshold[1])
-            smpl.image_display(window=True, draw_roi=roi, snr=True, ax=ax2[smpl.camera], histo_ax=ax2[8], threshold=threshold[1])
-        smpl_imgs[channel] = smpl
-        if save_image:
-            smpl.save_image(float32=True, uint16=True, uint8=True, fits=True)
     if display:
-        show_grid(fig, ax)
-        show_grid(fig1, ax1)
-        show_grid(fig2, ax2)
-    return smpl_imgs
+        display_scene(scene_imgs, scene, statistic='signal', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(scene_imgs, scene, statistic='noise', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(scene_imgs, scene, statistic='snr', window=window, draw_roi=draw_roi, caption=caption)
+
+    if export_scene:
+        save_scene(scene_imgs, float32=float32, uint16=uint16, uint8=uint8, fits=fits)
+
+    return scene_imgs
+
+def save_scene(scene_imgs, 
+               float32: bool=True, 
+               uint16: bool=True, 
+               uint8: bool=False, 
+               fits: bool=True) -> None:
+    """Save the image from each channel in the scene.
+
+    :param scene_imgs: _description_
+    :type scene_imgs: _type_
+    :param float32: _description_, defaults to True
+    :type float32: bool, optional
+    :param uint16: _description_, defaults to True
+    :type uint16: bool, optional
+    :param uint8: _description_, defaults to True
+    :type uint8: bool, optional
+    :param fits: _description_, defaults to True
+    :type fits: bool, optional
+    """    
+
+    channels = list(scene_imgs.keys())
+    for channel in channels:
+        chnl_scene = scene_imgs[channel]
+        chnl_scene.save_image(float32=float32, uint16=uint16, uint8=uint8, fits=fits)
+
+def display_scene(
+        scene_imgs: Dict, 
+        scene: str, 
+        statistic: str='signal',
+        caption: str=None,
+        window: bool=True, 
+        draw_roi: bool=True, 
+        threshold: float=None,
+        context: object=None) -> None:
+    """Display the signal, noise or SNR images of the scene.
+
+    :param scene_imgs: Dictionary of scene images
+    :type scene_imgs: Dict
+    """
+    channels = list(scene_imgs.keys())
+    
+    title = f'{scene.capitalize()} {statistic.capitalize()}'
+    fig, ax = grid_plot(title)
+    if caption is not None:
+        grid_caption(caption)
+
+    for channel in channels:
+        smpl = scene_imgs[channel]
+        if context is not None:
+            smpl_cntxt = context[channel]
+        else:
+            smpl_cntxt = None
+        smpl.image_display(
+            statistic=statistic, 
+            window=window, 
+            draw_roi=draw_roi, 
+            ax=ax[smpl.camera], 
+            histo_ax=ax[8], 
+            threshold=threshold,
+            context=smpl_cntxt)
+
+    show_grid(fig, ax)
 
 def load_dark_frames(scene: str='sample', roi: bool=False, caption: Tuple[str, str]=None) -> Dict:
     channels = sorted(list(Path('..', 'data', scene).glob('[!.]*')))
@@ -2263,130 +2261,14 @@ def load_dark_frames(scene: str='sample', roi: bool=False, caption: Tuple[str, s
     show_grid(fig1, ax1)
     return dark_imgs
 
-def load_geometric_calibration(
-        scene_path: Path, 
-        dark_path: Path, 
-        display: bool=True, 
-        caption: str=None) -> Dict:
-    """Load the geometric calibration images.
-
-    :param scene_path: Directory of geometric calibration images
-    :type scene_path: Path
-    :param dark_path: Directory of dark frames
-    :type dark_path: Path
-    :param display: Display images, defaults to True
-    :type display: bool, optional
-    :param caption: Caption for the grid of plots, defaults to None
-    :type caption: Tuple[str, str], optional
-    :return: Dictionary of geometric correction LightImages
-    :rtype: Dict
-    """    
-    # test scene directory exists
-    if not scene_path.exists():
-        raise FileNotFoundError(f'Could not find {scene_path}')
-    # scene = scene_path.name
-    # channels = sorted(list(scene_path.glob('[!.]*')))
-    channels = sorted(list(next(os.walk(scene_path))[1]))
-
-
-    # channels = sorted(list(scene_path.glob('[!._]*')))
-    geocs = {}
-    if display:
-        fig, ax = grid_plot('Geometric Calibration Target')
-        if caption is not None:
-            grid_caption(caption)
-    for channel in channels:
-        # load the geometric calibration images
-        geoc = LightImage(scene_path, channel)
-        geoc.image_load()
-        print(f'Loading Geometric Target for: {geoc.camera} ({geoc.cwl} nm)')
-        # load the geometric calibration dark frames
-        dark_geoc = DarkImage(dark_path, channel)
-        dark_geoc.image_load()
-        # subtract the dark frame
-        geoc.dark_subtract(dark_geoc)
-        # show
-        if display:
-            geoc.image_display(roi=False, ax=ax[geoc.camera], histo_ax=ax[8])
-        geocs[channel] = geoc
-    if display:
-        show_grid(fig, ax)
-    return geocs
-
-def load_reflectance_calibration(
-        scene_path: Path, 
-        dark_path: Path, 
-        product_path: Path,
-        display: bool=True, 
-        roi: bool=False, 
-        caption: str=None, 
-        threshold: Tuple[float,float]=(None,None),
-        save_image: bool=False) -> Dict:
-    
-    # test scene directory exists
-    if not scene_path.exists():
-        raise FileNotFoundError(f'Could not find {scene_path}')
-    scene = scene_path.name
-    channels = sorted(list(next(os.walk(scene_path))[1]))
-    # if products in channels list, then drop products
-    if 'products' in channels:
-        channels.remove('products')
-
-    # set up plots
-    title = f'{scene} Images'
-    if display:
-        fig, ax = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[0])
-        title = f'{scene} Images Noise'
-        fig1, ax1 = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[1])
-        title = f'{scene} Image SNR'
-        fig2, ax2 = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[2])
-
-    cali_imgs = {} # store the calibration objects in a dictionary
-    for channel in channels:
-
-        # load the calibration target images
-        cali = LightImage(scene_path, product_path, channel)
-        cali.image_load()
-        
-        # load the calibration target dark frames
-        dark_cali = DarkImage(dark_path, product_path, channel)
-        dark_cali.image_load()
-        
-        # Check exposure times are equal
-        light_exp = cali.exposure
-        dark_exp = dark_cali.exposure
-        if light_exp != dark_exp:
-            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
-        
-        # subtract the dark frame
-        cali.dark_subtract(dark_cali)
-        
-        # show
-        if display:
-            cali.image_display(window=True, draw_roi=roi, ax=ax[cali.camera], histo_ax=ax[8], threshold=threshold[0])
-            cali.image_display(window=True, draw_roi=roi, noise=True, ax=ax1[cali.camera], histo_ax=ax1[8], threshold=threshold[1])
-            cali.image_display(window=True, draw_roi=roi, snr=True, ax=ax2[cali.camera], histo_ax=ax2[8], threshold=threshold[1])
-        
-        cali_imgs[channel] = cali
-        if save_image:
-            cali.save_image(float32=True, uint8=True, uint16=True, fits=True)
-    
-    # show plots
-    show_grid(fig, ax)
-    show_grid(fig1, ax1)
-    show_grid(fig2, ax2)
-    if caption is not None:
-        grid_caption(caption)
-
-    return cali_imgs
-
-def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: float=0.25, average: bool=False) -> Dict:
+def calibrate_reflectance(
+        cali_imgs: Dict, 
+        clip: float=0.25, 
+        average: bool=False, 
+        caption: Tuple[str, str]=None, 
+        display: bool=True,
+        window: bool=True,
+        draw_roi: bool=True) -> Dict:
     """Calibrate the reflectance correction coefficients for images
     of the Spectralon reflectance target.
 
@@ -2401,14 +2283,7 @@ def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: 
     """
     channels = list(cali_imgs.keys())
     cali_coeffs = {}
-    title = 'Reflectance Calibration Coefficients'
-    fig, ax = grid_plot(title)
-    if caption is not None:
-        grid_caption(caption[0])
-    title = 'Reflectance Calibration Coefficients Error'
-    fig1, ax1 = grid_plot(title)
-    if caption is not None:
-        grid_caption(caption[1])
+
     for channel in channels:
         # load the calibration target images
         cali = cali_imgs[channel]
@@ -2421,17 +2296,27 @@ def calibrate_reflectance(cali_imgs: Dict, caption: Tuple[str, str]=None, clip: 
             cali_coeff.mask_target(clip)
         cali_coeff.compute_reflectance_coefficients()
             
-        cali_coeff.image_display(window=True, draw_roi=True, ax=ax[cali_coeff.camera], histo_ax=ax[8])
-        cali_coeff.image_display(window=True, draw_roi=True, noise=True, ax=ax1[cali_coeff.camera], histo_ax=ax1[8])
         if average:
             cali_coeffs[channel] = cali_coeff.image_stats(roi=True)
         else:
             cali_coeffs[channel] = cali_coeff
-    show_grid(fig, ax)
-    show_grid(fig1, ax1)
+
+    if display:
+        scene = 'Reflectance Calibration Coefficients'
+        display_scene(cali_coeffs, scene, statistic='signal', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(cali_coeffs, scene, statistic='noise', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(cali_coeffs, scene, statistic='snr', window=window, draw_roi=draw_roi, caption=caption)            
+
     return cali_coeffs
 
-def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict, caption: Tuple[str,str,str]=None) -> Dict:
+def apply_reflectance_calibration(
+        scene_imgs: Dict, 
+        cali_coeffs: Dict, 
+        export_scene: bool=True,
+        display: bool=True,
+        window: bool=True,
+        draw_roi: bool=True,
+        caption: Tuple[str,str,str]=None) -> Dict:
     """Apply reflectance calibration coefficients to the sample images.
 
     :param sample_imgs: Dictionary of LightImage objects (units of DN)
@@ -2439,23 +2324,11 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict, caption: T
     :return: Dictionary of Reflectance Images (units of Reflectance)
     :rtype: Dict
     """
-    channels = list(smpl_imgs.keys())
-    reflectance = {}
-    title = 'Sample Reflectance'
-    fig, ax = grid_plot(title)
-    if caption is not None:
-        grid_caption(caption[0])
-    title = 'Sample Reflectance Noise'
-    fig1, ax1 = grid_plot(title)
-    if caption is not None:
-        grid_caption(caption[1])
-    title = 'Sample Reflectance SNR'
-    fig2, ax2 = grid_plot(title)
-    if caption is not None:
-        grid_caption(caption[2])
+    channels = list(scene_imgs.keys())
+    reflectance = {}    
     vmax=0.0
     for channel in channels:
-        smpl = smpl_imgs[channel]
+        smpl = scene_imgs[channel]
         # apply exposure correction
         smpl.correct_exposure()
         # apply calibration coefficients
@@ -2464,19 +2337,19 @@ def apply_reflectance_calibration(smpl_imgs: Dict, cali_coeffs: Dict, caption: T
         refl.calibrate_reflectance(cali_coeff)
         refl_max = np.max(refl.roi_image()[np.isfinite(refl.roi_image())])
         if refl_max > vmax:
-            vmax = refl_max
-        # save the reflectance image
-        refl.save_image(float32=True, uint8=True, uint16=True, fits=True)
+            vmax = refl_max        
         reflectance[channel] = refl
-    for channel in channels:
-        refl = reflectance[channel]
-        context = smpl_imgs[channel]
-        refl.image_display(window=True, draw_roi=True, ax=ax[refl.camera], histo_ax=ax[8], vmin=0.0, vmax=vmax, context=context)
-        refl.image_display(window=True, draw_roi=True, noise=True, ax=ax1[refl.camera], histo_ax=ax1[8], context=context)
-        refl.image_display(window=True, draw_roi=True, snr=True, ax=ax2[refl.camera], histo_ax=ax2[8], context=context)
-    show_grid(fig, ax)
-    show_grid(fig1, ax1)
-    show_grid(fig2, ax2)
+        scene = refl.scene        
+
+    if export_scene:
+        save_scene(reflectance, float32=True, fits=True, uint8=False, uint16=False)
+
+    if display:
+        title = f'{scene} Reflectance'
+        display_scene(reflectance, title, statistic='signal', context=scene_imgs, window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(reflectance, title, statistic='noise', context=scene_imgs, window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(reflectance, title, statistic='snr', context=scene_imgs, window=window, draw_roi=draw_roi, caption=caption)            
+
     return reflectance
 
 def load_reference_reflectance(refl_imgs, reference_filename: str):
@@ -2506,7 +2379,7 @@ def load_reference_reflectance(refl_imgs, reference_filename: str):
         reference_reflectance.sort_values(by='cwl', inplace=True)
         return reference_reflectance
 
-def get_reference_reflectance(cali_coeffs: Dict) -> pd.DataFrame:
+def get_channel_reference_reflectance(cali_coeffs: Dict) -> pd.DataFrame:
     """Get the reference reflectance and error for each channel.
 
     :param cali_coeffs: Dictionary of CalibrationImage objects for each channel
@@ -2523,11 +2396,15 @@ def get_reference_reflectance(cali_coeffs: Dict) -> pd.DataFrame:
         ref_val[channel] = cali_coeff.reference_reflectance
         ref_err[channel] = cali_coeff.reference_reflectance_err
         cwl[channel] = cali_coeff.cwl
-    reference = pd.DataFrame({'cwl': cwl, 'reference': ref_val, 'error': ref_err}, index=channels)
+    reference = pd.DataFrame({'cwl': cwl, 'reflectance': ref_val, 'error': ref_err}, index=channels)
     reference.sort_values('cwl', inplace=True)
     return reference
 
-def set_channel_rois(smpl_imgs: Dict, roi_size: int=None, roi_dict: Dict=None) -> Dict:
+def set_channel_rois(
+        smpl_imgs: Dict, 
+        roi_size: int=None, 
+        roi_dict: Dict=None,
+        cross_hair_is_centre: bool=False) -> Dict:
     """Set the region of interest on each channel of the given set of channels.
 
     :param smpl_imgs: Dictionary of LightImage objects
@@ -2547,9 +2424,12 @@ def set_channel_rois(smpl_imgs: Dict, roi_size: int=None, roi_dict: Dict=None) -
             roi_params = roi_dict[channel]
         else:
             roi_params = None
-        new_roi = smpl.set_roi(roi_size=roi_size, roi_params=roi_params)
+        new_roi = smpl.set_roi(
+                    roi_size=roi_size, 
+                    roi_params=roi_params, 
+                    cross_hair_is_centre=cross_hair_is_centre)
         new_roi_dict[channel] = new_roi
-    display_rois(smpl_imgs)
+    display_rois(smpl_imgs, roi_name='ROI Update')
     return new_roi_dict
 
 def set_roi(aligned_imgs: Dict, base_channel: str='6_550', caption: Tuple[str,str]=(None,None)) -> Dict:
@@ -2586,31 +2466,38 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550', caption: Tuple[str,st
     show_grid(fig1, ax1)
     return aligned_imgs
 
-def plot_roi_reflectance(
+def analyse_roi_reflectance(
         refl_imgs: Dict,
+        roi_name: str,
         reference_reflectance: pd.DataFrame=None,
-        show_error_limit: bool=False,
-        weighted: bool=False,
+        polyroi: bool=True,
+        show_error_limit: bool=False,        
+        display_roi: bool=False,
         caption: str=None) -> pd.DataFrame:
-    """Plot the reflectance over the Region of Interest
+    """Analyse the reflectance over the Region of Interest, 
+    and plot and export the results
 
     :param refl_imgs: Dictionary of ReflectanceImage objects
     :type refl_imgs: Dict
     :return: Pandas DataFrame of reflectance over the ROI
     :rtype: pd.DataFrame
     """
+
+    # roi stats output
     cwls = []
     means = []
     n_pixs = []
     stds = []
     means_of_img_std = []
     stderr = []
-    wt_means = []
-    wt_stds = []
+    channel_coords = {}
+
     channels = list(refl_imgs.keys())
     for channel in channels:
         refl_img = refl_imgs[channel]
-        mean, std, mean_of_img_std, wt_mean, wt_std, n_pix = refl_img.image_stats(roi=True, polyroi=True)
+        scene = refl_img.scene
+        products_dir = refl_img.products_dir
+        mean, std, mean_of_img_std, n_pix, coords = refl_img.image_stats(roi=True, polyroi=polyroi)
         cwl = refl_img.cwl
         cwls.append(cwl)
         means.append(mean)
@@ -2618,75 +2505,115 @@ def plot_roi_reflectance(
         stds.append(std)
         means_of_img_std.append(mean_of_img_std)
         stderr.append(std / np.sqrt(n_pix))
-        wt_means.append(wt_mean)
-        wt_stds.append(wt_std)
-    results = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'n_pixels': n_pixs, 'standard deviation':stds, 'mean_of_img_std':means_of_img_std, 'standard error':stderr, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
+        channel_coords[channel] = coords
+
+    results = pd.DataFrame({'cwl':cwls, 'Mean Signal ROI':means, 'Std. Dev. Signal ROI':stds, 'Mean Noise ROI':means_of_img_std, 'ROI N-pixels': n_pixs,  'Std. Err. Signal ROI':stderr}) #, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
     results.sort_values(by='cwl', inplace=True)
-    # results.plot(x='cwl', y='mean', yerr='std')
+
+    # prepare output directory    
+    rois_dir = Path(products_dir, 'rois')
+    rois_dir.mkdir(parents=True, exist_ok=True)
+    roi_dir = Path(rois_dir, roi_name)
+    roi_dir.mkdir(parents=True, exist_ok=True)
+
+    # output the raw data for each channel
+    for channel in channels:
+        refl_img = refl_imgs[channel]
+        coords = channel_coords[channel]        
+        # construct data Df
+        pixel_means = refl_img.img_ave[coords[0], coords[1]]
+        pixel_noise = refl_img.img_std[coords[0], coords[1]]
+        pixel_data = pd.DataFrame({'x':coords[1], 'y':coords[0], 'mean':pixel_means, 'noise':pixel_noise})
+
+        roi_data_dir = Path(roi_dir, 'roi_data')
+        roi_data_dir.mkdir(parents=True, exist_ok=True)        
+        filename = f'{channel}_{roi_name}_raw_data.csv'
+        filepath = Path(roi_data_dir, filename)
+        pixel_data.to_csv(filepath, index=False)
+
+    if display_roi:
+        fig, ax = display_rois(refl_imgs, roi_name=roi_name, polyroi=polyroi)
+        # save the figure
+        filename = f'{roi_name}_context_gridplot.png'
+        filepath = Path(roi_dir, filename)
+        fig.savefig(filepath, dpi=300)
 
     fig = plt.figure()
     plt.grid(visible=True)
-    if weighted:
-        plt.errorbar(
-                x=results.cwl,
-                y=results['reflectance (wt)'],
-                yerr=results['std (wt)'],
-                fmt='o-',
-                ecolor='k',
-                capsize=2.0)
-    else:
-        if show_error_limit:
-            plt.errorbar(
-                    x=results.cwl,
-                    y=results.reflectance,
-                    yerr=results.mean_of_img_std,
-                    fmt='',
-                    linestyle='',
-                    ecolor='r',
-                    label='Error as Mean of Pixel Std. Dev.',
-                    capsize=6.0)
-            plt.errorbar(
-                    x=results.cwl,
-                    y=results.reflectance,
-                    yerr=results['standard deviation'],
-                    fmt='',
-                    linestyle='',   
-                    ecolor='b',
-                    label='Error as Std. Dev. of ROI',
-                    capsize=2.0)
-            plt.errorbar(
-                    x=results.cwl,
-                    y=results.reflectance,
-                    yerr=results['standard error'],
-                    fmt='o-',
-                    # linestyle='',
-                    ecolor='k',
-                    label='Error as Std. Error of ROI.',
-                    capsize=6.0)
-    plt.legend()
-    plt.xlabel('Wavelength (nm)')
-    plt.ylabel('Reflectance')
-    # plt.title('Sample Reflectance Mean ± 1σ over ROI')
 
     if reference_reflectance is not None:
         plt.errorbar(
             x=reference_reflectance.cwl,
             y=reference_reflectance.reflectance,
-            yerr=reference_reflectance['standard deviation'],
-            fmt='o-',
-            capsize=2.0
+            yerr=reference_reflectance.error,
+            fmt='x--',
+            color='g',
+            capsize=5.0,
+            label='Reference Reflectance ± 1σ'
         )
 
+    if show_error_limit:
+        plt.errorbar(
+                x=results.cwl,
+                y=results['Mean Signal ROI'],
+                yerr=results['Mean Noise ROI'],
+                fmt='',
+                linestyle='',
+                ecolor='r',
+                label='±Mean of Noise ROI',
+                capsize=5.0)
+        plt.errorbar(
+                x=results.cwl,
+                y=results['Mean Signal ROI'],
+                yerr=results['Std. Dev. Signal ROI'],
+                fmt='',
+                linestyle='',   
+                ecolor='b',
+                label='±Std. Dev. of Signal ROI',
+                capsize=5.0)
+        plt.errorbar(
+                x=results.cwl,
+                y=results['Mean Signal ROI'],
+                yerr=results['Std. Err. Signal ROI'],
+                fmt='',
+                linestyle='',
+                ecolor='k',
+                label='±Std. Err. of Signal ROI',
+                capsize=5.0)
+    plt.plot(
+        results.cwl,
+        results['Mean Signal ROI'],
+        'bo-',
+        label=f'Mean of Signal ROI'        
+    )
+    plt.xlabel('Wavelength (nm)')
+    plt.ylabel('Reflectance')
+    plt.title(f'{scene.capitalize()} Reflectance over ROI {roi_name.capitalize()}')
+
+    plt.legend()
+
+    filename = f'{roi_name}_reflectance_plot.png'
+    filepath = Path(roi_dir, filename)
+    plt.savefig(filepath, dpi=300)
+
     if caption is not None:
-        grid_caption(caption)
+        grid_caption(caption)        
 
+    results['SNR <signal>/<noise>'] = results['Mean Signal ROI'] / results['Mean Noise ROI']
+    results['SNR <signal>/stddev(signal)'] = results['Mean Signal ROI'] / results['Std. Dev. Signal ROI']
 
-    results['SNR Limit'] = results['reflectance'] / results['mean_of_img_std']
-    results['SNR'] = results['reflectance'] / results['standard deviation']
+    filename = f'{roi_name}_reflectance_data.csv'
+    filepath = Path(roi_dir, filename)
+    results.to_csv(filepath)
 
     return results
 
-def set_roi_mask(smpl_imgs: Dict, threshold: int=None, roi: bool=False) -> Dict:
+def set_channel_polyrois(
+        smpl_imgs: Dict, 
+        roi_name: str,
+        threshold: int=None, 
+        roi: bool=False, 
+        display: bool=True) -> Dict:
     """Draw an ROI on each image, and set this as a mask.
 
     :param smpl_imgs: Dictionary of Image objects for each channel
@@ -2698,10 +2625,12 @@ def set_roi_mask(smpl_imgs: Dict, threshold: int=None, roi: bool=False) -> Dict:
     for channel in channels:
         smpl = smpl_imgs[channel]
         smpl.set_polyroi(threshold=threshold, roi=roi)
-    # display_rois(smpl_imgs, polyroi=True)
+
+    if display:
+        display_rois(smpl_imgs, roi_name, polyroi=True)
     return smpl_imgs
 
-def display_rois(smpl_imgs: Dict, window: bool=True, draw_roi: bool=True, polyroi: bool=False) -> None:
+def display_rois(smpl_imgs: Dict, roi_name: str, window: bool=True, draw_roi: bool=True, polyroi: bool=False) -> None:
     """Display the region of interest of each channel in a grid plot.
 
     :param smpl_imgs: Dictioanry of images to display
@@ -2714,11 +2643,12 @@ def display_rois(smpl_imgs: Dict, window: bool=True, draw_roi: bool=True, polyro
     :type polyroi: bool, optional
     """    
     channels = list(smpl_imgs.keys())
-    fig, ax = grid_plot('Region of Interest')
+    fig, ax = grid_plot(f'{roi_name.capitalize()} Region of Interest')
     for channel in channels:
         smpl = smpl_imgs[channel]
         smpl.image_display(window=window, draw_roi=draw_roi, polyroi=polyroi, ax=ax[smpl.camera], histo_ax=ax[8])
     show_grid(fig, ax)
+    return fig, ax
 
 def export_images(smpl_imgs: Dict, uint8: bool=False, uint16: bool=False, roi: bool=False) -> None:
     """Export the image stack to tiff
@@ -3530,3 +3460,225 @@ def apply_coalignment(smpl_imgs: Dict, coals: Dict, caption: Tuple[str, str]=Non
     show_grid(fig, ax)
     show_grid(fig1, ax1)
     return aligned_refl
+
+# def load_geometric_calibration(
+#         scene_path: Path, 
+#         dark_path: Path, 
+#         display: bool=True, 
+#         caption: str=None) -> Dict:
+#     """Load the geometric calibration images.
+
+#     :param scene_path: Directory of geometric calibration images
+#     :type scene_path: Path
+#     :param dark_path: Directory of dark frames
+#     :type dark_path: Path
+#     :param display: Display images, defaults to True
+#     :type display: bool, optional
+#     :param caption: Caption for the grid of plots, defaults to None
+#     :type caption: Tuple[str, str], optional
+#     :return: Dictionary of geometric correction LightImages
+#     :rtype: Dict
+#     """    
+#     # test scene directory exists
+#     if not scene_path.exists():
+#         raise FileNotFoundError(f'Could not find {scene_path}')
+#     # scene = scene_path.name
+#     # channels = sorted(list(scene_path.glob('[!.]*')))
+#     channels = sorted(list(next(os.walk(scene_path))[1]))
+
+
+#     # channels = sorted(list(scene_path.glob('[!._]*')))
+#     geocs = {}
+#     if display:
+#         fig, ax = grid_plot('Geometric Calibration Target')
+#         if caption is not None:
+#             grid_caption(caption)
+#     for channel in channels:
+#         # load the geometric calibration images
+#         geoc = LightImage(scene_path, channel)
+#         geoc.image_load()
+#         print(f'Loading Geometric Target for: {geoc.camera} ({geoc.cwl} nm)')
+#         # load the geometric calibration dark frames
+#         dark_geoc = DarkImage(dark_path, channel)
+#         dark_geoc.image_load()
+#         # subtract the dark frame
+#         geoc.dark_subtract(dark_geoc)
+#         # show
+#         if display:
+#             geoc.image_display(roi=False, ax=ax[geoc.camera], histo_ax=ax[8])
+#         geocs[channel] = geoc
+#     if display:
+#         show_grid(fig, ax)
+#     return geocs
+
+# def load_reflectance_calibration(
+#         scene_path: Path, 
+#         dark_path: Path, 
+#         product_path: Path,
+#         display: bool=True, 
+#         roi: bool=False, 
+#         caption: str=None, 
+#         threshold: Tuple[float,float]=(None,None),
+#         save_image: bool=False) -> Dict:
+    
+#     # test scene directory exists
+#     if not scene_path.exists():
+#         raise FileNotFoundError(f'Could not find {scene_path}')
+#     scene = scene_path.name
+#     channels = sorted(list(next(os.walk(scene_path))[1]))
+#     # if products in channels list, then drop products
+#     if 'products' in channels:
+#         channels.remove('products')
+
+#     # set up plots
+#     title = f'{scene} Images'
+#     if display:
+#         fig, ax = grid_plot(title)
+#         if caption is not None:
+#             grid_caption(caption[0])
+#         title = f'{scene} Images Noise'
+#         fig1, ax1 = grid_plot(title)
+#         if caption is not None:
+#             grid_caption(caption[1])
+#         title = f'{scene} Image SNR'
+#         fig2, ax2 = grid_plot(title)
+#         if caption is not None:
+#             grid_caption(caption[2])
+
+#     cali_imgs = {} # store the calibration objects in a dictionary
+#     for channel in channels:
+
+#         # load the calibration target images
+#         cali = LightImage(scene_path, product_path, channel)
+#         cali.image_load()
+        
+#         # load the calibration target dark frames
+#         dark_cali = DarkImage(dark_path, product_path, channel)
+#         dark_cali.image_load()
+        
+#         # Check exposure times are equal
+#         light_exp = cali.exposure
+#         dark_exp = dark_cali.exposure
+#         if light_exp != dark_exp:
+#             raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+        
+#         # subtract the dark frame
+#         cali.dark_subtract(dark_cali)
+        
+#         # show
+#         if display:
+#             cali.image_display(window=True, draw_roi=roi, ax=ax[cali.camera], histo_ax=ax[8], threshold=threshold[0])
+#             cali.image_display(window=True, draw_roi=roi, noise=True, ax=ax1[cali.camera], histo_ax=ax1[8], threshold=threshold[1])
+#             cali.image_display(window=True, draw_roi=roi, snr=True, ax=ax2[cali.camera], histo_ax=ax2[8], threshold=threshold[1])
+        
+#         cali_imgs[channel] = cali
+#         if save_image:
+#             cali.save_image(float32=True, uint8=True, uint16=True, fits=True)
+    
+#     # show plots
+#     show_grid(fig, ax)
+#     show_grid(fig1, ax1)
+#     show_grid(fig2, ax2)
+#     if caption is not None:
+#         grid_caption(caption)
+
+#     return cali_imgs
+
+
+    # def save_image(self, uint8: bool=False, uint16: bool=False):
+    #     """Save the average and error images to TIF files"""
+    #     # TODO update to control conversion to string, and ensure high precision for exposure time
+
+    #     # prepare metadata
+    #     metadata={
+    #         'scene': self.scene,
+    #         'image-type': self.img_type,
+    #         'camera': self.camera,
+    #         'serial': self.serial,
+    #         'cwl': self.cwl,
+    #         'fwhm': self.fwhm,
+    #         'f-number': self.fnumber,
+    #         'f-length': self.flength,
+    #         'exposure': self.exposure,
+    #         'units': self.units,
+    #         'n_imgs': self.n_imgs
+    #     }
+    #     cwl_str = str(int(self.cwl))
+    #     cam_num = str(self.camera)        
+
+    #     # prepare filename and output directory
+    #     name = 'mean'
+    #     filename = cam_num+'_'+cwl_str+'_'+name+'_'+self.img_type
+    #     product_dir = self.products_dir
+    #     product_dir.mkdir(parents=True, exist_ok=True)
+
+    #     tiffs_dir = Path(product_dir, 'tiffs')
+    #     fits_dir = Path(product_dir, 'fits')
+    #     tiffs_dir.mkdir(parents=True, exist_ok=True)
+    #     fits_dir.mkdir(parents=True, exist_ok=True)
+        
+    #     if self.roi:
+    #         out_img = self.roi_image(self.polyroi)
+    #         err_img = self.roi_std(self.polyroi)
+    #     else:
+    #         out_img = self.img_ave
+    #         err_img = self.img_std
+
+    #     # out_img = np.clip(out_img, 0.0, None) # clip to ensure non-negative
+
+    #     if uint8:
+    #         # convert to 8-bit
+    #         out_img = np.floor(out_img/16).astype(np.uint8)
+    #     elif uint16:
+    #         # convert to 16-bit
+    #         out_img = np.floor(out_img).astype(np.uint16)
+    #     else:
+    #         out_img = out_img.astype(np.float32) # set data type to float 32
+
+    #     # write camera properties to TIF using ImageJ metadata        
+    #     img_file =str(Path(tiffs_dir, filename).with_suffix('.tif'))
+    #     tiff.imwrite(img_file, out_img, imagej=True, metadata=metadata)
+    #     print(f'Mean image written to {img_file}')
+
+    #     # if FITS is true, save to FITs file also
+    #     img_file =str(Path(fits_dir, filename).with_suffix('.fits'))
+
+    #     hdu = fitsio.PrimaryHDU(out_img)
+    #     hdu.header['scene'] = self.scene
+    #     hdu.header['type'] = self.img_type
+    #     hdu.header['camera'] = int(self.camera)
+    #     hdu.header['serial'] = int(self.serial)
+    #     hdu.header['cwl'] = self.cwl
+    #     hdu.header['fwhm'] = self.fwhm
+    #     hdu.header['f-number'] = self.fnumber
+    #     hdu.header['f-length'] = self.flength
+    #     hdu.header['exposure'] = self.exposure
+    #     hdu.header['units'] = self.units
+    #     hdu.writeto(img_file, overwrite=True)
+
+    #     # error image
+    #     name = 'error'
+    #     filename = cam_num+'_'+cwl_str+'_'+name+'_'+self.img_type
+    #     img_file =str(Path(tiffs_dir, filename).with_suffix('.tif'))
+    #     # write camera properties to TIF using ImageJ metadata
+    #     # clip to ensure nonzero
+    #     # err_img = np.clip(err_img, 0.0, None)
+    #     # set data type to float 32
+    #     err_img = err_img.astype(np.float32) 
+    #     tiff.imwrite(img_file, err_img, imagej=True, metadata=metadata)
+    #     print(f'Error image written to {img_file}')
+
+    #     # if FITS is true, save to FITs file also
+    #     img_file =str(Path(fits_dir, filename).with_suffix('.fits'))
+    #     hdu = fitsio.PrimaryHDU(err_img)
+    #     hdu.header['scene'] = self.scene
+    #     hdu.header['type'] = self.img_type
+    #     hdu.header['camera'] = int(self.camera)
+    #     hdu.header['serial'] = int(self.serial)
+    #     hdu.header['cwl'] = self.cwl
+    #     hdu.header['fwhm'] = self.fwhm
+    #     hdu.header['f-number'] = self.fnumber
+    #     hdu.header['f-length'] = self.flength
+    #     hdu.header['exposure'] = self.exposure
+    #     hdu.header['units'] = self.units
+    #     hdu.writeto(img_file, overwrite=True)
