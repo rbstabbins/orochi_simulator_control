@@ -26,9 +26,9 @@ import orochi_sim_ctrl as osc
 FIG_W = 10 # figure width in inches
 
 # set default Window/ROI Size information
-WIN_S = 80 # size of window in pixels
-Y_TRIM = 100 # fine adjustment of the window centre
-X_TRIM = 20 # fine adjustment of the window centre
+WIN_S = 200 # size of window in pixels
+Y_TRIM = 0 #100 # fine adjustment of the window centre
+X_TRIM = 0 #20 # fine adjustment of the window centre
 CNTR = [(1200//2)-(WIN_S//2)+Y_TRIM, (1920//2)-(WIN_S//2)+X_TRIM] # centre of the window
 OFFSET = 275 # offset in pixels for a 10 cm camera displacement at 80 cm object distance
 WINDOWS = { # window coordinartes for each camera
@@ -658,6 +658,24 @@ class LightImage(Image):
         self.f_length = None
         self.dif_img = None
 
+    def estimate_dark_signal(self) -> Tuple:
+        """Estimate the dark signal for the iamge by averaging the corner
+        100 x 100 pixels in each image.
+
+        :return: Dark signal and Dark Standard Deviation
+        :rtype: Tuple
+        """        
+        corner1 = self.img_ave[0:99,0:99]
+        corner2 = self.img_ave[-100:-1,0:99]
+        corner3 = self.img_ave[0:99,-100:-1]
+        corner4 = self.img_ave[-100:-1,-100:-1]
+        corners = np.concatenate((corner1, corner2, corner3, corner4))
+
+        dark = np.mean(corners)
+        dark_err = np.std(corners) / np.sqrt(len(corners))
+
+        return dark, dark_err
+
     def dark_subtract(self, dark_image: DarkImage) -> None:
         
         if isinstance(dark_image, float):
@@ -666,6 +684,12 @@ class LightImage(Image):
             self.img_ave = np.clip(self.img_ave, 0.0, None)
             lght_err = self.img_std/np.sqrt(self.n_imgs)
             drk_err = 0.0
+        elif isinstance(dark_image, Tuple):
+            lst_ave = self.img_ave.copy()
+            self.img_ave -= dark_image[0]
+            self.img_ave = np.clip(self.img_ave, 0.0, None)
+            lght_err = self.img_std/np.sqrt(self.n_imgs)
+            drk_err = dark_image[1]
         else:
             lst_ave = self.img_ave.copy()
             self.img_ave -= dark_image.img_ave        
@@ -2162,6 +2186,9 @@ def load_scene(
         elif isinstance(dark_path, dict):
             dark_smpl = dark_path[channel]            
             chnl_scene.dark_subtract(dark_smpl)
+        else: # if no dark information is provided, make estimate from the light image corners
+            dark_smpl = chnl_scene.estimate_dark_signal()
+            chnl_scene.dark_subtract(dark_smpl)
             
         scene_imgs[channel] = chnl_scene
 
@@ -2492,6 +2519,11 @@ def analyse_roi_reflectance(
     stderr = []
     channel_coords = {}
 
+    # additional information
+    exposures = []
+    cam_nums = []
+    phase_angles = []    
+
     channels = list(refl_imgs.keys())
     for channel in channels:
         refl_img = refl_imgs[channel]
@@ -2506,6 +2538,8 @@ def analyse_roi_reflectance(
         means_of_img_std.append(mean_of_img_std)
         stderr.append(std / np.sqrt(n_pix))
         channel_coords[channel] = coords
+
+        exposures.append(refl_img.exposure)
 
     results = pd.DataFrame({'cwl':cwls, 'Mean Signal ROI':means, 'Std. Dev. Signal ROI':stds, 'Mean Noise ROI':means_of_img_std, 'ROI N-pixels': n_pixs,  'Std. Err. Signal ROI':stderr}) #, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
     results.sort_values(by='cwl', inplace=True)
