@@ -42,6 +42,19 @@ WINDOWS = { # window coordinartes for each camera
     7: [ CNTR[0]-OFFSET, CNTR[1]+OFFSET, WIN_S, WIN_S]
 }
 
+# incidence (°), cam x-displacement (cm), cam y-displacement (cm), emission (°), azimuth (°), phase (°)
+
+CAM_ANGLES = { 
+    0: [30.00, 0.10, 0.00, 7.125, 180.000, 37.125],
+    1: [30.00, 0.10, -0.10, 10.025, 225.000, 37.697],
+    2: [30.00, -0.10, 0.10, 10.025, 45.000, 23.887],
+    3: [30.00, 0.00, -0.10, 7.125, 270.000, 30.758],
+    4: [30.00, -0.10, 0.00, 7.125, 0.000, 22.875],
+    5: [30.00, 0.00, 0.10, 7.125, 90.000, 30.758],
+    6: [30.00, 0.10, 0.10, 10.025, 135.000, 37.697],
+    7: [30.00, -0.10, -0.10, 10.025, 315.000, 23.887]
+}
+
 class Image:
     """Super class for handling image import and export.
     """
@@ -54,6 +67,9 @@ class Image:
         self.channel = channel
         self.img_type = img_type
         self.camera = None
+        self.emission_angle = None
+        self.azimuth_angle = None
+        self.phase_angle = None
         self.serial = None
         self.width = None
         self.height = None
@@ -137,6 +153,12 @@ class Image:
             self.winx = WINDOWS[self.camera][1]
             self.winh = WINDOWS[self.camera][2]
             self.winw = WINDOWS[self.camera][3]
+
+            # get phase angle information from camera number look up
+            angle_info = CAM_ANGLES[self.camera]
+            self.emission_angle = angle_info[3]
+            self.azimuth_angle = angle_info[4]
+            self.phase_angle = angle_info[5]
 
         img_stk = np.dstack(img_list)
         # average stack
@@ -403,6 +425,30 @@ class Image:
         win_img = img[win_y:win_y+win_h, win_x:win_x+win_w]
         extent = [win_x, win_x+win_w, win_y+win_h, win_y] # coordinates of (left, right, bottom, top)
 
+        col = channel_cols(self.camera)     
+        if histo_ax is not None:
+            # add histogram      
+            if statistic=='dif_img':
+                img = self.dif_img
+                title = f'Difference Histogram'
+            elif draw_roi:
+                img = img[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw]
+                title = f'ROI Histogram'            
+            elif window:
+                img = win_img
+                title = f'Window Histogram'
+            counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)  
+            # vmin = np.min(bins)
+            # vmax = np.max(bins)
+            histo_ax.hist(bins[:-1], bins, weights=counts,
+                        label=f'{int(self.cwl)} nm ({self.camera})',
+                        color=col,
+                        log=True, fill=False, stacked=True, histtype='step')
+            histo_ax.set_xlabel(label)
+            # histo_ax.set_box_aspect(im_ratio)
+            histo_ax.legend()
+            histo_ax.set_title(title)
+
         if statistic=='dif_img':
             cmap = 'seismic'
             vmax = np.max(np.abs(win_img))
@@ -418,9 +464,7 @@ class Image:
             ax.add_patch(rect)        
 
         im_ratio = win_img.shape[0] / win_img.shape[1]
-        cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=label)
-
-        col = channel_cols(self.camera)        
+        cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, label=label)           
 
         if ('Noise' in label):
             cbar.formatter.set_powerlimits((0, 0))
@@ -433,27 +477,6 @@ class Image:
         else:
             cbar.formatter.set_powerlimits((0, 0))
         ax.set_title(f'Device {self.camera} ({int(self.cwl)} nm)')
-
-        if histo_ax is not None:
-            # add histogram      
-            if statistic=='dif_img':
-                img = self.dif_img
-                title = f'Difference Histogram'
-            elif draw_roi:
-                img = img[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw]
-                title = f'ROI Histogram'            
-            elif window:
-                img = win_img
-                title = f'Window Histogram'
-            counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)        
-            histo_ax.hist(bins[:-1], bins, weights=counts,
-                        label=f'{int(self.cwl)} nm ({self.camera})',
-                        color=col,
-                        log=True, fill=False, stacked=True, histtype='step')
-            histo_ax.set_xlabel(label)
-            # histo_ax.set_box_aspect(im_ratio)
-            histo_ax.legend()
-            histo_ax.set_title(title)
 
         if context is not None:
             # draw context image
@@ -529,6 +552,7 @@ class Image:
                     'scene': self.scene,
                     'image-type': self.img_type,
                     'camera': self.camera,
+                    'phase': self.phase_angle,
                     'serial': self.serial,
                     'cwl': self.cwl,
                     'fwhm': self.fwhm,
@@ -796,6 +820,9 @@ class CalibrationImage(Image):
         self.channel = source_image.channel
         self.img_type = 'cal'
         self.camera = source_image.camera
+        self.emission_angle = source_image.emission_angle
+        self.azimuth_angle = source_image.azimuth_angle
+        self.phase_angle = source_image.phase_angle
         self.serial = source_image.serial
         self.width = source_image.width
         self.height = source_image.height
@@ -873,6 +900,9 @@ class ReflectanceImage(Image):
         self.channel = source_image.channel
         self.img_type = 'rfl'
         self.camera = source_image.camera
+        self.emission_angle = source_image.emission_angle
+        self.azimuth_angle = source_image.azimuth_angle
+        self.phase_angle = source_image.phase_angle
         self.serial = source_image.serial
         self.width = source_image.width
         self.height = source_image.height
@@ -940,6 +970,9 @@ class CoAlignedImage(Image):
         self.channel = source_image.channel
         self.img_type = 'geo'
         self.camera = source_image.camera
+        self.emission_angle = source_image.emission_angle
+        self.azimuth_angle = source_image.azimuth_angle
+        self.phase_angle = source_image.phase_angle
         self.serial = source_image.serial
         self.width = source_image.width
         self.height = source_image.height
@@ -1128,6 +1161,9 @@ class GeoCalImage(Image):
         self.channel = source_image.channel
         self.img_type = 'geo'
         self.camera = source_image.camera
+        self.emission_angle = source_image.emission_angle
+        self.azimuth_angle = source_image.azimuth_angle
+        self.phase_angle = source_image.phase_angle
         self.serial = source_image.serial
         self.width = source_image.width
         self.height = source_image.height
@@ -2234,7 +2270,7 @@ def display_scene(
         window: bool=True, 
         draw_roi: bool=True, 
         threshold: float=None,
-        context: object=None) -> None:
+        context: object=None) -> Tuple:
     """Display the signal, noise or SNR images of the scene.
 
     :param scene_imgs: Dictionary of scene images
@@ -2263,6 +2299,9 @@ def display_scene(
             context=smpl_cntxt)
 
     show_grid(fig, ax)
+    
+    return fig, ax
+
 
 def load_dark_frames(scene: str='sample', roi: bool=False, caption: Tuple[str, str]=None) -> Dict:
     channels = sorted(list(Path('..', 'data', scene).glob('[!.]*')))
@@ -2521,8 +2560,10 @@ def analyse_roi_reflectance(
 
     # additional information
     exposures = []
-    cam_nums = []
-    phase_angles = []    
+    cam_nums = []    
+    phase_angles = []   
+    azimuth_angles = [] 
+    emission_angles = []
 
     channels = list(refl_imgs.keys())
     for channel in channels:
@@ -2540,8 +2581,23 @@ def analyse_roi_reflectance(
         channel_coords[channel] = coords
 
         exposures.append(refl_img.exposure)
+        cam_nums.append(refl_img.camera)
+        phase_angles.append(refl_img.phase_angle)
+        azimuth_angles.append(refl_img.azimuth_angle)
+        emission_angles.append(refl_img.emission_angle)
 
-    results = pd.DataFrame({'cwl':cwls, 'Mean Signal ROI':means, 'Std. Dev. Signal ROI':stds, 'Mean Noise ROI':means_of_img_std, 'ROI N-pixels': n_pixs,  'Std. Err. Signal ROI':stderr}) #, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
+    results = pd.DataFrame({
+        'cwl':cwls, 
+        'Phase':phase_angles, 
+        'Azimuth': azimuth_angles, 
+        'Emission': emission_angles, 
+        'Mean Signal ROI':means, 
+        'Std. Dev. Signal ROI':stds, 
+        'Mean Noise ROI':means_of_img_std, 
+        'ROI N-pixels': n_pixs, 
+        'Std. Err. Signal ROI':stderr, 
+        'Exposure': exposures, 
+        'Device': cam_nums}) #, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
     results.sort_values(by='cwl', inplace=True)
 
     # prepare output directory    
