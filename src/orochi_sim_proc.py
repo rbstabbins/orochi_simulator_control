@@ -16,8 +16,8 @@ from matplotlib import colors
 import matplotlib as mpl
 import numpy as np
 import pandas as pd
-from roipoly import RoiPoly, MultiRoi
-import scipy
+from roipoly import RoiPoly
+import scipy.optimize as opt
 from shutil import copytree, copy
 import tifffile as tiff
 from typing import Tuple, Dict, Union, List
@@ -926,7 +926,7 @@ class ReflectanceImage(Image):
         self.img_ave = source_image.img_ave
         self.img_std = source_image.img_std
 
-    def calibrate_reflectance(self, cali_source: Union[Image, Tuple]):
+    def calibrate_reflectance(self, cali_source: Union[Image, Tuple], find_shift: bool=False) -> CalibrationImage:
 
         lst_ave = self.img_ave.copy()
 
@@ -936,17 +936,83 @@ class ReflectanceImage(Image):
             cali_std = cali_source[2] # use the mean of the standard deviations
         else:
             # otherwise, assume it is an Image object
+            # apply new image alignment method
+            if find_shift:
+                cali_source = self.align_cali_source(cali_source)    
+
             cali_coeff = cali_source.img_ave
             cali_std = cali_source.img_std
             
-        # print('Quick hack in place - calibrating to median reflectance calibration coefficient')
-        # cali_coeff = np.nanmedian(cali_source.img_ave)
-
         self.img_ave = self.img_ave * cali_coeff
         self.units = 'Reflectance'
         lght_err = self.img_std/lst_ave
         cali_err = cali_std/cali_coeff
         self.img_std = self.img_ave * np.sqrt((lght_err)**2 + (cali_err)**2)
+
+        return cali_source
+
+    def align_cali_source(self, cali_source: Image) -> None:
+        """Align the calibration source to the reflectance image, by finding
+        the source and sample centre points through Gaussian fitting around
+        the ROI coordinates
+
+        :param cali_source: Calibration target image.
+        :type cali_source: Image
+        """        
+        cali_source_img = cali_source.img_ave.copy()
+        refl_target_img = self.img_ave.copy()
+
+        # Gaussian blur the images
+        refl_target_img = cv2.GaussianBlur(refl_target_img, (5, 5), 0)
+        # also invert the reflectance coefficient image, and remove all NaNs
+        cali_source_img = 1.0/ cv2.GaussianBlur(cali_source_img, (5, 5), 0)
+        cali_source_img = np.where(np.isfinite(cali_source_img), cali_source_img, 0.0)
+
+        # use window size centred on ROI        
+        cali_source_img = cali_source_img[
+            cali_source.roiy-cali_source.winh//2:cali_source.roiy+cali_source.winh//2, 
+            cali_source.roix-cali_source.winw//2:cali_source.roix+cali_source.winw//2]
+        refl_target_img = refl_target_img[
+            self.roiy-self.winh//2:self.roiy+self.winh//2, 
+            self.roix-self.winw//2:self.roix+self.winw//2]        
+
+        # fit a 2D Gaussian to refl_target_img using the refl_target_img ROI as an initial estimate
+        yi, xi = np.mgrid[:self.winh, :self.winw]
+        xyi = np.vstack([xi.ravel(), yi.ravel()])
+        guess = [np.nanmax(refl_target_img), self.winw//2, self.winh//2, 0.001, 0.001, 0.001]
+        pred_params, uncert_cov = opt.curve_fit(self.gauss2d, xyi, refl_target_img.ravel(), p0=guess)
+
+        x0, y0 = pred_params[1], pred_params[2]
+        tgt_abs_y0 = y0 + self.roiy-self.winh//2
+        tgt_abs_x0 = x0 + self.roix-self.winw//2
+
+        # fit a 2D Gaussian to cali_source_img using the image ROI as an initial estimate
+        guess = [np.nanmax(cali_source_img), cali_source.winw//2, cali_source.winh//2, 0.001, 0.001, 0.001]
+        pred_params, uncert_cov = opt.curve_fit(self.gauss2d, xyi, cali_source_img.ravel(), p0=guess)
+
+        x0, y0 = pred_params[1], pred_params[2]
+        src_abs_y0 = y0 + cali_source.roiy-cali_source.winh//2
+        src_abs_x0 = x0 + cali_source.roix-cali_source.winw//2
+
+        # compute the shift required to align the images
+        shift_y = np.round(tgt_abs_y0 - src_abs_y0)
+        shift_x = np.round(tgt_abs_x0 - src_abs_x0)
+        
+        cali_source.img_ave = np.roll(cali_source.img_ave, int(shift_y), axis=0)
+        cali_source.img_ave = np.roll(cali_source.img_ave, int(shift_x), axis=1)
+
+        cali_source.img_std = np.roll(cali_source.img_std, int(shift_y), axis=0)
+        cali_source.img_std = np.roll(cali_source.img_std, int(shift_x), axis=1)
+
+        return cali_source
+
+    @staticmethod
+    def gauss2d(xy, amp, x0, y0, a, b, c):
+        x, y = xy
+        inner = a * (x - x0)**2 
+        inner += 2 * b * (x - x0)**2 * (y - y0)**2
+        inner += c * (y - y0)**2
+        return amp * np.exp(-inner)
 
     def normalise(self, base: Image):
         """Normalise the reflectance image to a base image.
@@ -956,7 +1022,7 @@ class ReflectanceImage(Image):
         base_err = base.img_std/base.img_ave
         self.img_ave = self.img_ave / base.img_ave
         self.units = 'Normalised Reflectance'
-        self.img_std = self.img_ave * np.sqrt(self_err**2 + base_err**2)
+        self.img_std = self.img_ave * np.sqrt(self_err**2 + base_err**2)    
 
 class CoAlignedImage(Image):
     def __init__(self,
@@ -2378,6 +2444,7 @@ def calibrate_reflectance(
 def apply_reflectance_calibration(
         scene_imgs: Dict, 
         cali_coeffs: Dict, 
+        find_shift: bool=False,
         export_scene: bool=True,
         display: bool=True,
         window: bool=True,
@@ -2391,7 +2458,9 @@ def apply_reflectance_calibration(
     :rtype: Dict
     """
     channels = list(scene_imgs.keys())
-    reflectance = {}    
+    reflectance = {}  
+    shift_cali_coeffs = {}  
+    show_scene_difference(scene_imgs, cali_coeffs)
     vmax=0.0
     for channel in channels:
         smpl = scene_imgs[channel]
@@ -2400,12 +2469,14 @@ def apply_reflectance_calibration(
         # apply calibration coefficients
         cali_coeff = cali_coeffs[channel]
         refl = ReflectanceImage(smpl)
-        refl.calibrate_reflectance(cali_coeff)
+        shift_cali_coeffs[channel] = refl.calibrate_reflectance(cali_coeff, find_shift=find_shift)
         refl_max = np.max(refl.roi_image()[np.isfinite(refl.roi_image())])
         if refl_max > vmax:
             vmax = refl_max        
         reflectance[channel] = refl
         scene = refl.scene        
+
+    show_scene_difference(scene_imgs, shift_cali_coeffs)
 
     if export_scene:
         save_scene(reflectance, float32=True, fits=True, uint8=False, uint16=False)
@@ -3166,8 +3237,6 @@ def process_flat_fields(
 
     return ff_imgs
 
-
-
 def show_scene_difference(scene_1: Dict, scene_2: Dict):
     channels = list(scene_1.keys())
     title = 'Difference'
@@ -3178,7 +3247,7 @@ def show_scene_difference(scene_1: Dict, scene_2: Dict):
         diff = smpl_1.img_ave/(np.nanmedian(smpl_1.roi_image())) - smpl_2.img_ave/(np.nanmedian(smpl_2.roi_image()))        
         # diff = smpl_1.img_ave - smpl_2.img_ave
         smpl_1.dif_img = diff
-        smpl_1.image_display(window=True, draw_roi=False, ax=ax[smpl_1.camera], histo_ax=ax[8], dif_img=True)
+        smpl_1.image_display(window=True, draw_roi=False, ax=ax[smpl_1.camera], histo_ax=ax[8], statistic='dif_img')
     show_grid(fig, ax)
 
 
