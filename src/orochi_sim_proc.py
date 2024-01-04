@@ -224,8 +224,8 @@ class Image:
 
         if statistic=='dif_img':
             cmap = 'seismic'
-            vmax = np.max(np.abs(win_img))
-            vmin = -vmax
+            vmax = 1.0 # np.max(np.abs(win_img))
+            vmin = -1.0 # -vmax
         else:
             cmap = 'viridis'
 
@@ -850,6 +850,77 @@ class LightImage(Image):
         }
 
         return cal_dict
+    
+    def align_cali_source(self, source: Image) -> None:
+        """Align the given calibration image to the image, by finding
+        the source and sample centre points through Gaussian fitting around
+        the ROI coordinates. Return the new cali source.
+
+        :param cali_source: Calibration target image.
+        :type cali_source: Image
+        """        
+        source_img = source.img_ave.copy()
+        target_img = self.img_ave.copy()
+
+        # Gaussian blur the images
+        target_img = cv2.GaussianBlur(target_img, (5, 5), 0)        
+        source_img = cv2.GaussianBlur(source_img, (5, 5), 0)        
+
+        # use window size centred on ROI        
+        source_img = source_img[
+            source.roiy-source.winh//2:source.roiy+source.winh//2, 
+            source.roix-source.winw//2:source.roix+source.winw//2]
+        target_img = target_img[
+            self.roiy-self.winh//2:self.roiy+self.winh//2, 
+            self.roix-self.winw//2:self.roix+self.winw//2]        
+
+        # fit a 2D Gaussian to target_img using the target_img ROI as an initial estimate
+        yi, xi = np.mgrid[:self.winh, :self.winw]
+        xyi = np.vstack([xi.ravel(), yi.ravel()])
+        guess = [np.nanmax(target_img), self.winw//2, self.winh//2, 0.001, 0.001, 0.001]
+        pred_params, uncert_cov = opt.curve_fit(self.gauss2d, xyi, target_img.ravel(), p0=guess)
+
+        x0, y0 = pred_params[1], pred_params[2]
+        tgt_abs_y0 = y0 + self.roiy-self.winh//2
+        tgt_abs_x0 = x0 + self.roix-self.winw//2
+
+        # fit a 2D Gaussian to cali_source_img using the image ROI as an initial estimate
+        guess = [np.nanmax(source_img), source.winw//2, source.winh//2, 0.001, 0.001, 0.001]
+        pred_params, uncert_cov = opt.curve_fit(self.gauss2d, xyi, source_img.ravel(), p0=guess)
+
+        x0, y0 = pred_params[1], pred_params[2]
+        src_abs_y0 = y0 + source.roiy-source.winh//2
+        src_abs_x0 = x0 + source.roix-source.winw//2
+
+        # compute the shift required to align the images
+        shift_y = np.round(tgt_abs_y0 - src_abs_y0)
+        shift_x = np.round(tgt_abs_x0 - src_abs_x0)
+        
+        source.img_ave = np.roll(source.img_ave, int(shift_y), axis=0)
+        source.img_ave = np.roll(source.img_ave, int(shift_x), axis=1)
+
+        source.img_std = np.roll(source.img_std, int(shift_y), axis=0)
+        source.img_std = np.roll(source.img_std, int(shift_x), axis=1)
+
+        # update the cali_source roi and window to match self
+        source.roiy = self.roiy
+        source.roix = self.roix
+        source.roiw = self.roiw
+        source.roih = self.roih
+        source.winy = self.winy
+        source.winx = self.winx
+        source.winh = self.winh
+        source.winw = self.winw
+
+        return source
+    
+    @staticmethod
+    def gauss2d(xy, amp, x0, y0, a, b, c):
+        x, y = xy
+        inner = a * (x - x0)**2 
+        inner += 2 * b * (x - x0)**2 * (y - y0)**2
+        inner += c * (y - y0)**2
+        return amp * np.exp(-inner)
 
 class CalibrationImage(Image):
     """Class for handling Calibration Images, inherits Image class."""
@@ -1049,14 +1120,6 @@ class ReflectanceImage(Image):
         cali_source.img_std = np.roll(cali_source.img_std, int(shift_x), axis=1)
 
         return cali_source
-
-    @staticmethod
-    def gauss2d(xy, amp, x0, y0, a, b, c):
-        x, y = xy
-        inner = a * (x - x0)**2 
-        inner += 2 * b * (x - x0)**2 * (y - y0)**2
-        inner += c * (y - y0)**2
-        return amp * np.exp(-inner)
 
     def normalise(self, base: Image):
         """Normalise the reflectance image to a base image.
@@ -2415,6 +2478,37 @@ def display_scene(
     
     return fig, ax
 
+def align_scenes(
+        target_scene: Dict[str, LightImage], 
+        source_scene: Dict[str, LightImage], 
+        display: bool=True) -> Dict:
+    """Align the source scene to the target scene.
+
+    :param target_scene: Dictionary of target scene images
+    :type target_scene: Dict
+    :param source_scene: Dictionary of source scene images
+    :type source_scene: Dict
+    :return: Dictionary of aligned source scene images
+    :rtype: Dict
+    """
+    channels = list(target_scene.keys())
+    aligned_scene = {}
+
+    if display:
+        show_scene_difference(target_scene, source_scene)
+
+    for channel in channels:
+        target = target_scene[channel]
+        source = source_scene[channel]
+        print(f'Aligning {target.scene}: {target.camera} ({int(target.cwl)} nm) to {source.scene}: {source.camera} ({int(source.cwl)} nm)')
+        align = target.align_cali_source(source)        
+        aligned_scene[channel] = align
+    
+    if display:
+        show_scene_difference(target_scene, aligned_scene)
+    
+    return aligned_scene
+
 def load_dark_frames(scene: str='sample', roi: bool=False, caption: Tuple[str, str]=None) -> Dict:
     channels = sorted(list(Path('..', 'data', scene).glob('[!.]*')))
     dark_imgs = {} # store the calibration objects in a dictionary
@@ -2506,7 +2600,8 @@ def apply_reflectance_calibration(
     channels = list(scene_imgs.keys())
     reflectance = {}  
     shift_cali_coeffs = {}  
-    show_scene_difference(scene_imgs, cali_coeffs)
+    if find_shift:
+        show_scene_difference(scene_imgs, cali_coeffs)
     vmax=0.0
     for channel in channels:
         smpl = scene_imgs[channel]
@@ -2522,16 +2617,17 @@ def apply_reflectance_calibration(
         reflectance[channel] = refl
         scene = refl.scene        
 
-    show_scene_difference(scene_imgs, shift_cali_coeffs)
+    if find_shift:
+        show_scene_difference(scene_imgs, shift_cali_coeffs)
 
     if export_scene:
         save_scene(reflectance, float32=True, fits=True, uint8=False, uint16=False)
 
     if display:
         title = f'{scene} Reflectance'
-        display_scene(reflectance, title, statistic='signal', context=scene_imgs, window=window, draw_roi=draw_roi, caption=caption)            
-        display_scene(reflectance, title, statistic='noise', context=scene_imgs, window=window, draw_roi=draw_roi, caption=caption)            
-        display_scene(reflectance, title, statistic='snr', context=scene_imgs, window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(reflectance, title, statistic='signal', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(reflectance, title, statistic='noise', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(reflectance, title, statistic='snr', window=window, draw_roi=draw_roi, caption=caption)            
 
     return reflectance
 
