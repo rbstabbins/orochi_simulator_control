@@ -268,9 +268,9 @@ class Image:
 
         plt.draw()
         yticks = cbar2.get_yticks()
-        new_yticks = [f'{t:.0f}' if t != 0 else '$\mu$' for t in yticks]
+        new_yticks = [fr"{t:.0f}" if t != 0 else r"$\mu$" for t in yticks]
         cbar2.set_yticklabels(new_yticks)        
-        cbar.set_label('$\sigma$ | Val.', y=1.1, rotation=0, labelpad=-15)
+        cbar.set_label(r"$\sigma$ | Val.", y=1.1, rotation=0, labelpad=-15)
         
         return ax
 
@@ -575,7 +575,7 @@ class Image:
 
         # if not 8 bit convert for display
         if img.dtype != np.uint8:
-            img = np.floor(img * 255/np.nanmax(img)).astype(np.uint8)    
+            img = np.clip(np.floor(img * 200/np.nanmax(self.roi_image())), 0, 255).astype(np.uint8)
 
         if roi_params is None:
             title = f'ROI Selection: {self.camera}_{self.cwl}'            
@@ -633,7 +633,7 @@ class Image:
 
             roi_ave = np.nanmean(self.roi_image())
             roi_std = np.nanstd(self.roi_image())            
-            vmin = roi_ave - (roi_std * 5)
+            vmin = roi_ave - (roi_std * 10)
             vmax = roi_ave + (roi_std * 5)          
 
             plt.imshow(img, origin='upper', extent=extent, cmap='viridis', vmin=vmin, vmax=vmax)
@@ -2442,6 +2442,7 @@ def display_scene(
         caption: str=None,
         window: Union[bool, str]=True, 
         draw_roi: bool=True, 
+        polyroi: bool=False,
         threshold: float=None,
         vmin: float=None,
         vmax: float=None,
@@ -2468,6 +2469,7 @@ def display_scene(
             statistic=statistic, 
             window=window, 
             draw_roi=draw_roi, 
+            polyroi=polyroi,
             ax=ax[smpl.camera], 
             histo_ax=ax[8], 
             threshold=threshold,
@@ -2680,7 +2682,7 @@ def get_channel_reference_reflectance(cali_coeffs: Dict) -> pd.DataFrame:
     return reference
 
 def set_channel_rois(
-        smpl_imgs: Dict, 
+        smpl_imgs: Dict[str, Image], 
         roi_size: int=None, 
         roi_dict: Dict=None,
         cross_hair_is_centre: bool=False) -> Dict:
@@ -2941,7 +2943,7 @@ def set_channel_polyrois(
 
     return new_poly_rois
 
-def display_rois(smpl_imgs: Dict, roi_name: str, window: bool=True, draw_roi: bool=True, polyroi: bool=False) -> None:
+def display_rois(smpl_imgs: Dict[str, Image], roi_name: str, window: bool=True, draw_roi: bool=True, polyroi: bool=False) -> None:
     """Display the region of interest of each channel in a grid plot.
 
     :param smpl_imgs: Dictioanry of images to display
