@@ -14,10 +14,13 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import colors
 import matplotlib as mpl
+from matplotlib import ticker as mticker
 import numpy as np
 import pandas as pd
 from roipoly import RoiPoly
 import scipy.optimize as opt
+import scipy.signal as sig
+import scipy.ndimage as ndi
 from shutil import copytree, copy
 import tifffile as tiff
 from typing import Tuple, Dict, Union, List
@@ -27,8 +30,8 @@ FIG_W = 10 # figure width in inches
 
 # set default Window/ROI Size information
 WIN_S = 100 # size of window in pixels
-Y_TRIM = 0 #100 # fine adjustment of the window centre
-X_TRIM = 0 #20 # fine adjustment of the window centre
+Y_TRIM = 20 #100 # fine adjustment of the window centre
+X_TRIM = 100 #20 # fine adjustment of the window centre
 CNTR = [(1200//2)-(WIN_S//2)+Y_TRIM, (1920//2)-(WIN_S//2)+X_TRIM] # centre of the window
 OFFSET = 275 # offset in pixels for a 10 cm camera displacement at 80 cm object distance
 WINDOWS = { # window coordinartes for each camera
@@ -199,11 +202,19 @@ class Image:
             elif window:
                 img = win_img
                 title = f'Window Histogram'
+            else:
+                img = win_img
+                title = f'Image Histogram'
             counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)  
             
             # set range according to median and std of ROI
             roi_ave = np.nanmean(img)
             roi_std = np.nanstd(img)
+
+            if roi_std == 0:
+                roi_std = roi_ave/10
+
+            # TODO still some problems occuring here
             if vmin is None:
                 vmin = roi_ave - (roi_std * 10)
                 vmin = np.clip(vmin, np.nanmin(win_img), np.nanmax(win_img))
@@ -269,8 +280,9 @@ class Image:
         plt.draw()
         yticks = cbar2.get_yticks()
         new_yticks = [fr"{t:.0f}" if t != 0 else r"$\mu$" for t in yticks]
-        cbar2.set_yticklabels(new_yticks)        
-        cbar.set_label(r"$\sigma$ | Val.", y=1.1, rotation=0, labelpad=-15)
+        cbar2.yaxis.set_major_locator(mticker.FixedLocator(yticks.tolist()))
+        cbar2.set_yticklabels(new_yticks)                
+        cbar.set_label(r"$\sigma$ | Val.", y=1.1, rotation=0, labelpad=-15)        
         
         return ax
 
@@ -767,6 +779,57 @@ class LightImage(Image):
         self.units = 'Above-Bias Signal DN'
         print(f'Subtracting dark frame for: {self.camera} ({int(self.cwl)} nm)')
 
+    def flat_field(self, flat_image_dir: Path) -> None:
+        """Apply flat field correction to the image
+
+        :param flat_image: Flat Image object
+        :type flat_image: Image
+        """      
+        # look up the flat-field image in the directory.
+        flat_ave, flat_err = self.load_flat_field(flat_image_dir)
+
+        lst_img = self.img_ave.copy()
+        self.img_ave = self.img_ave / flat_ave
+        self.img_std = self.img_ave * np.sqrt((self.img_std/self.img_ave)**2 + (flat_err/flat_ave)**2)        
+        print(f'Flat fielding: {self.camera} ({int(self.cwl)} nm)') 
+
+    def load_flat_field(self, flat_field_dir: Path) -> Tuple[np.array, np.array]:
+        """Load flat-field image from the flat field directory
+
+        :param flat_field_dir: Flat-Field directory
+        :type flat_field_dir: Path
+        :return: _description_
+        :rtype: Tuple[Image, Image]
+        """        
+        
+        # get list flatfield of given channel from the flat field directory
+        file = Path(flat_field_dir, 'signal', self.channel+'_flatfield_ave.tif')
+        if file.exists() is False:
+            raise FileNotFoundError(f'Error: no flatfield image found for {self.channel} in {flat_field_dir}')
+        
+        self.units = '1'
+
+        try:
+            img = tiff.TiffFile(file)
+        except ValueError:
+            print('bad file')
+        ff_ave = img.asarray()
+
+        # get list flatfield of given channel from the flat field directory
+        file = Path(flat_field_dir, 'noise', self.channel+'_flatfield_err.tif')
+        if file.exists() is False:
+            raise FileNotFoundError(f'Error: no flatfield error found for {self.channel} in {flat_field_dir}')
+        
+        self.units = '1'
+
+        try:
+            img = tiff.TiffFile(file)
+        except ValueError:
+            print('bad file')
+        ff_err = img.asarray()
+
+        return ff_ave, ff_err
+
     def load_calibration(self) -> Tuple:             
         # intrinsic matrix
         mtx_path = Path(
@@ -1130,6 +1193,23 @@ class ReflectanceImage(Image):
         self.img_ave = self.img_ave / base.img_ave
         self.units = 'Normalised Reflectance'
         self.img_std = self.img_ave * np.sqrt(self_err**2 + base_err**2)    
+
+class NormalisedImage(ReflectanceImage):
+    """Class for handling Normalised Images, inherits ReflectanceImage class."""
+    def __init__(self, source_image: LightImage) -> None:
+        ReflectanceImage.__init__(self, source_image)
+        self.img_type = 'rfl_nrm'
+        self.units = 'Normalised Reflectance'
+
+    def normalise(self, base: Image):
+        """Normalise the reflectance image to a base image.
+        """
+        # uncertainty quantification
+        self_err = self.img_std/self.img_ave
+        base_err = base.img_std/base.img_ave
+        self.img_ave = self.img_ave / base.img_ave
+        self.units = 'Normalised Reflectance'
+        self.img_std = self.img_ave * np.sqrt(self_err**2 + base_err**2)
 
 class CoAlignedImage(Image):
     def __init__(self,
@@ -2334,6 +2414,7 @@ class StereoPair():
 def load_scene(
         scene_path: Path, 
         dark_path: Path=None, 
+        flat_path: Path=None,
         product_path: Path=None,
         img_type: str='img',
         display: bool=True,
@@ -2351,6 +2432,8 @@ def load_scene(
     :type scene_path: Path
     :param dark_path: Directory of dark frames, defaults to None
     :type dark_path: Path, optional
+    :param flat_path: Directory of flat field images, defaults to None
+    :type flat_path: Path, optional
     :param img_type: Image type, defaults to 'img'
     :type img_type: str, optional
     :param display: Display images, defaults to True
@@ -2382,6 +2465,7 @@ def load_scene(
         chnl_scene.image_load()
         print(f'Loading {scene}: {chnl_scene.camera} ({int(chnl_scene.cwl)} nm)')
 
+        # dark subtraction
         if isinstance(dark_path, Path):
             dark_smpl = DarkImage(dark_path, product_path, channel)
             dark_smpl.image_load()
@@ -2398,6 +2482,10 @@ def load_scene(
         else: # if no dark information is provided, make estimate from the light image corners
             dark_smpl = chnl_scene.estimate_dark_signal()
             chnl_scene.dark_subtract(dark_smpl)
+
+        # flat fielding
+        if flat_path is not None:
+            chnl_scene.flat_field(flat_path)
             
         scene_imgs[channel] = chnl_scene
 
@@ -2680,6 +2768,44 @@ def get_channel_reference_reflectance(cali_coeffs: Dict) -> pd.DataFrame:
     reference = pd.DataFrame({'cwl': cwl, 'reflectance': ref_val, 'error': ref_err}, index=channels)
     reference.sort_values('cwl', inplace=True)
     return reference
+
+def normalise_channel_reflectance(
+        target_scene: Dict[str, Image], 
+        base_scene: Dict[str, Image],
+        display: bool=True) -> Dict[str, Image]:
+    """Normalise the target scene to the base scene.
+    Target Scene and Base Scene must contain the same camera device numbers.
+    Target Scene and Base Scene must have the same units.
+
+    :param target_scene: scene to be normalised
+    :type target_scene: Dict[str, Image]
+    :param base_scene: scene to use for normalising
+    :type base_scene: Dict[str, Image]
+    :param display: Display the normalised scene, defaults to True
+    :type display: bool, optional
+    :return: Normalised Scene
+    :rtype: Dict[str, Image]
+    """    
+    channels = list(target_scene.keys())
+    normalised_scene = {}
+
+    # map the target scene keys to the base scene keys
+    target_keys = sorted(target_scene.keys())
+    base_keys = sorted(base_scene.keys())
+    t2b_dict = dict(zip(target_keys, base_keys))
+
+    for channel in channels:
+        target = target_scene[channel]
+        base = base_scene[t2b_dict[channel]]
+        print(f'Normalising {target.scene}: {target.camera} ({int(target.cwl)} nm) to {base.scene}: {base.camera} ({int(base.cwl)} nm)')
+        norm = NormalisedImage(target)
+        norm.normalise(base)
+        normalised_scene[channel] = norm
+
+    if display:
+        display_scene(normalised_scene, 'Normalised Scene', statistic='signal')
+
+    return normalised_scene
 
 def set_channel_rois(
         smpl_imgs: Dict[str, Image], 
@@ -3201,193 +3327,232 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
 
     return pct_data, full_well, k_adc, read_noise, lin_min, lin_max, offset, response
 
-def analyse_flat_fields(
-        flat_fields: Dict, 
-        scene_path: Path, 
-        dark_path: Path, 
-        display: bool=True, 
-        roi: bool=False, 
-        caption: str=None, 
-        threshold: Tuple[float,float]=(None,None),
-        save_image: bool=False) -> Dict:
-    """Load images of the flat-field.
+# def analyse_flat_fields(
+#         flat_fields: Dict, 
+#         scene_path: Path, 
+#         dark_path: Path, 
+#         display: bool=True, 
+#         roi: bool=False, 
+#         caption: str=None, 
+#         threshold: Tuple[float,float]=(None,None),
+#         save_image: bool=False) -> Dict:
+#     """Load images of the flat-field.
 
-    :param flat_fields: Directory of flat-field images
-    :type flat_fields: Dict
-    :param scene_path: Directory of flat-field images
-    :type scene_path: Path
-    :param dark_path: Directory of dark frames
-    :type dark_path: Path
-    :param display: Display images, defaults to True
-    :type display: bool, optional
-    :param roi: Display over the ROI on the image, defaults to False
-    :type roi: bool, optional
-    :param caption: Caption for the grid of plots, defaults to None
-    :type caption: Tuple[str, str], optional
-    :param threshold: Threshold for the image display, defaults to (None,None)
-    :type threshold: Tuple[float,float], optional
-    :return: Dictionary of sample LightImages (units of DN)
-    :rtype: Dict
-    """
-    # test scene directory exists
-    if not scene_path.exists():
-        raise FileNotFoundError(f'Could not find {scene_path}')
-    scene = scene_path.name
-    # channels = sorted(list(scene_path.glob('[!.]*')))
-    channels = sorted(list(next(os.walk(scene_path))[1]))
-    # if products in channels list, then drop products
-    if 'products' in channels:
-        channels.remove('products')
-    ff_imgs = {} # store the flat field mean images in a dictionary
-    title = f'{scene} Median ROIs'
-    if display:
-        fig, ax = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[0])
-        fig1, ax1 = grid_plot('Flat Fields')
-        if caption is not None:
-            grid_caption(caption[0])
+#     :param flat_fields: Directory of flat-field images
+#     :type flat_fields: Dict
+#     :param scene_path: Directory of flat-field images
+#     :type scene_path: Path
+#     :param dark_path: Directory of dark frames
+#     :type dark_path: Path
+#     :param display: Display images, defaults to True
+#     :type display: bool, optional
+#     :param roi: Display over the ROI on the image, defaults to False
+#     :type roi: bool, optional
+#     :param caption: Caption for the grid of plots, defaults to None
+#     :type caption: Tuple[str, str], optional
+#     :param threshold: Threshold for the image display, defaults to (None,None)
+#     :type threshold: Tuple[float,float], optional
+#     :return: Dictionary of sample LightImages (units of DN)
+#     :rtype: Dict
+#     """
+#     # test scene directory exists
+#     if not scene_path.exists():
+#         raise FileNotFoundError(f'Could not find {scene_path}')
+#     scene = scene_path.name
+#     # channels = sorted(list(scene_path.glob('[!.]*')))
+#     channels = sorted(list(next(os.walk(scene_path))[1]))
+#     # if products in channels list, then drop products
+#     if 'products' in channels:
+#         channels.remove('products')
+#     ff_imgs = {} # store the flat field mean images in a dictionary
+#     title = f'{scene} Median ROIs'
+#     if display:
+#         fig, ax = grid_plot(title)
+#         if caption is not None:
+#             grid_caption(caption[0])
+#         fig1, ax1 = grid_plot('Flat Fields')
+#         if caption is not None:
+#             grid_caption(caption[0])
 
-    ff_roll_uniformity = {}
-    ff_uniformity = {}
+#     ff_roll_uniformity = {}
+#     ff_uniformity = {}
 
-    # load spectralon example
-    test_path = Path(scene_path.parent, 'spectralon')
-    test_dark_path = Path(dark_path.parent, 'spectralon_dark')
-    spectralon = load_reflectance_calibration(test_path, test_dark_path, display=True, roi=True, save_image=False)
+#     # load spectralon example
+#     test_path = Path(scene_path.parent, 'spectralon')
+#     test_dark_path = Path(dark_path.parent, 'spectralon_dark')
+#     spectralon = load_reflectance_calibration(test_path, test_dark_path, display=True, roi=True, save_image=False)
 
-    for channel in channels:
-        ff = flat_fields[channel]
-        # get change in mean with each additional position
-        n_positions = ff.n_imgs
-        ff_stk = []
+#     for channel in channels:
+#         ff = flat_fields[channel]
+#         # get change in mean with each additional position
+#         n_positions = ff.n_imgs
+#         ff_stk = []
 
-        smpl = spectralon[channel] # reference target
+#         smpl = spectralon[channel] # reference target
 
-        ff_roll_uniformity[channel] = []
-        for i in np.arange(0, n_positions):
-            ff_roll = LightImage(scene_path, channel, img_type='ave')
-            ff_roll.image_load(n_imgs = i+1, mode='median')
-            dark = DarkImage(dark_path, channel)
-            dark.image_load()
-            ff_roll.dark_subtract(dark)
+#         ff_roll_uniformity[channel] = []
+#         for i in np.arange(0, n_positions):
+#             ff_roll = LightImage(scene_path, channel, img_type='ave')
+#             ff_roll.image_load(n_imgs = i+1, mode='median')
+#             dark = DarkImage(dark_path, channel)
+#             dark.image_load()
+#             ff_roll.dark_subtract(dark)
 
-            # apply the flat field to the reference target
-            ff_roll.img_ave = smpl.img_ave / ff_roll.img_ave
+#             # apply the flat field to the reference target
+#             ff_roll.img_ave = smpl.img_ave / ff_roll.img_ave
 
-            # ff_stk.append(ff_roll.roi_image())
-            ff_roll_uniformity[channel].append(100.0* (1 - np.nanstd(ff_roll.roi_image()) / np.nanmean(ff_roll.roi_image())))
+#             # ff_stk.append(ff_roll.roi_image())
+#             ff_roll_uniformity[channel].append(100.0* (1 - np.nanstd(ff_roll.roi_image()) / np.nanmean(ff_roll.roi_image())))
 
-        # Check exposure times are equal
-        light_exp = ff.exposure
-        dark_exp = dark.exposure
-        if light_exp != dark_exp:
-            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+#         # Check exposure times are equal
+#         light_exp = ff.exposure
+#         dark_exp = dark.exposure
+#         if light_exp != dark_exp:
+#             raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
      
-        # apply the flat field to the reference target
-        smpl.img_ave = smpl.img_ave / ff.img_ave
-        # copy flat field ROI to the smpl ROI
-        smpl.roi = ff.roi
-        smpl.roix = ff.roix
-        smpl.roiy = ff.roiy
-        smpl.roiw = ff.roiw
-        smpl.roih = ff.roih
+#         # apply the flat field to the reference target
+#         smpl.img_ave = smpl.img_ave / ff.img_ave
+#         # copy flat field ROI to the smpl ROI
+#         smpl.roi = ff.roi
+#         smpl.roix = ff.roix
+#         smpl.roiy = ff.roiy
+#         smpl.roiw = ff.roiw
+#         smpl.roih = ff.roih
 
-        # log the uniformity of the flat-fielded image
-        ff_uniformity[channel] = 100.0* (1 - np.nanstd(smpl.roi_image()) / np.nanmean(smpl.roi_image()))
+#         # log the uniformity of the flat-fielded image
+#         ff_uniformity[channel] = 100.0* (1 - np.nanstd(smpl.roi_image()) / np.nanmean(smpl.roi_image()))
 
-        if display:
-            smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
-            ff.image_display(roi=roi, ax=ax1[ff.camera], histo_ax=ax1[8], threshold=threshold[1])
-        # if save_image:
-        #     ff.save_image(uint16=False)
+#         if display:
+#             smpl.image_display(roi=roi, ax=ax[smpl.camera], histo_ax=ax[8], threshold=threshold[0])
+#             ff.image_display(roi=roi, ax=ax1[ff.camera], histo_ax=ax1[8], threshold=threshold[1])
+#         # if save_image:
+#         #     ff.save_image(uint16=False)
 
-    if display:
-        show_grid(fig, ax)
-        show_grid(fig1, ax1)
+#     if display:
+#         show_grid(fig, ax)
+#         show_grid(fig1, ax1)
 
-    return ff_roll_uniformity, ff_uniformity
+#     return ff_roll_uniformity, ff_uniformity
 
-def process_flat_fields(
-        scene_path: Path, 
-        dark_path: Path, 
-        display: bool=True, 
-        roi: bool=False, 
-        caption: str=None, 
-        threshold: Tuple[float,float]=(None,None),
-        save_image: bool=False) -> Dict:
-    """Load images of the flat-field.
+# def process_flat_fields(
+#         scene_path: Path, 
+#         dark_path: Path, 
+#         display: bool=True, 
+#         roi: bool=False, 
+#         caption: str=None, 
+#         threshold: Tuple[float,float]=(None,None),
+#         save_image: bool=False) -> Dict:
+#     """Load images of the flat-field.
 
-    :param scene_path: Directory of flat-field images
-    :type scene_path: Path
-    :param dark_path: Directory of dark frames
-    :type dark_path: Path
-    :param display: Display images, defaults to True
-    :type display: bool, optional
-    :param roi: Display over the ROI on the image, defaults to False
-    :type roi: bool, optional
-    :param caption: Caption for the grid of plots, defaults to None
-    :type caption: Tuple[str, str], optional
-    :return: Dictionary of sample LightImages (units of DN)
-    :rtype: Dict
-    """
-    # test scene directory exists
-    if not scene_path.exists():
-        raise FileNotFoundError(f'Could not find {scene_path}')
-    scene = scene_path.name
-    # channels = sorted(list(scene_path.glob('[!.]*')))
-    channels = sorted(list(next(os.walk(scene_path))[1]))
-    # if products in channels list, then drop products
-    if 'products' in channels:
-        channels.remove('products')
-    ff_imgs = {} # store the flat field mean images in a dictionary
-    title = f'{scene} Median ROIs'
-    if display:
-        fig, ax = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[0])
-        title = f'{scene} Noise ROIs'
-        fig1, ax1 = grid_plot(title)
-        if caption is not None:
-            grid_caption(caption[1])
+#     :param scene_path: Directory of flat-field images
+#     :type scene_path: Path
+#     :param dark_path: Directory of dark frames
+#     :type dark_path: Path
+#     :param display: Display images, defaults to True
+#     :type display: bool, optional
+#     :param roi: Display over the ROI on the image, defaults to False
+#     :type roi: bool, optional
+#     :param caption: Caption for the grid of plots, defaults to None
+#     :type caption: Tuple[str, str], optional
+#     :return: Dictionary of sample LightImages (units of DN)
+#     :rtype: Dict
+#     """
+#     # test scene directory exists
+#     if not scene_path.exists():
+#         raise FileNotFoundError(f'Could not find {scene_path}')
+#     scene = scene_path.name
+#     # channels = sorted(list(scene_path.glob('[!.]*')))
+#     channels = sorted(list(next(os.walk(scene_path))[1]))
+#     # if products in channels list, then drop products
+#     if 'products' in channels:
+#         channels.remove('products')
+#     ff_imgs = {} # store the flat field mean images in a dictionary
+#     title = f'{scene} Median ROIs'
+#     if display:
+#         fig, ax = grid_plot(title)
+#         if caption is not None:
+#             grid_caption(caption[0])
+#         title = f'{scene} Noise ROIs'
+#         fig1, ax1 = grid_plot(title)
+#         if caption is not None:
+#             grid_caption(caption[1])
 
-    for channel in channels:
-        ff = LightImage(scene_path, channel, img_type='ave')
-        ff.image_load(mode='median')
-        print(f'Loading {scene}: {ff.camera} ({int(ff.cwl)} nm)')
-        dark = DarkImage(dark_path, channel)
-        dark.image_load()
-        # subtract the dark frame
-        ff.dark_subtract(dark)
+#     for channel in channels:
+#         ff = LightImage(scene_path, channel, img_type='ave')
+#         ff.image_load(mode='median')
+#         print(f'Loading {scene}: {ff.camera} ({int(ff.cwl)} nm)')
+#         dark = DarkImage(dark_path, channel)
+#         dark.image_load()
+#         # subtract the dark frame
+#         ff.dark_subtract(dark)
 
-        # Check exposure times are equal
-        light_exp = ff.exposure
-        dark_exp = dark.exposure
-        if light_exp != dark_exp:
-            raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
+#         # Check exposure times are equal
+#         light_exp = ff.exposure
+#         dark_exp = dark.exposure
+#         if light_exp != dark_exp:
+#             raise ValueError(f'Light and Dark Exposure Times are not equal: {light_exp} != {dark_exp}')
 
-        # normalise the flat field to the maximum value in the ROI, after Gaussian blurring with a 3x3 kernel
-        ff_roi = ff.roi_image()
-        ff_roi = cv2.GaussianBlur(ff_roi, (3,3), 0)
-        ff.img_ave = ff.img_ave / ff_roi.max()
-        ff.img_std = ff.img_std / ff_roi.max()
-        ff.img_type = 'flat-field'
-        ff.units = '1'
+#         # normalise the flat field to the maximum value in the ROI, after Gaussian blurring with a 3x3 kernel
+#         ff_roi = ff.roi_image()
+#         ff_roi = cv2.GaussianBlur(ff_roi, (3,3), 0)
+#         ff.img_ave = ff.img_ave / ff_roi.max()
+#         ff.img_std = ff.img_std / ff_roi.max()
+#         ff.img_type = 'flat-field'
+#         ff.units = '1'
 
-        ff_imgs[channel] = ff
+#         ff_imgs[channel] = ff
         
-        # show
-        if display:
-            ff.image_display(roi=roi, ax=ax[ff.camera], histo_ax=ax[8], threshold=threshold[0])
-            ff.image_display(roi=roi, noise=True, ax=ax1[ff.camera], histo_ax=ax1[8], threshold=threshold[1])
+#         # show
+#         if display:
+#             ff.image_display(roi=roi, ax=ax[ff.camera], histo_ax=ax[8], threshold=threshold[0])
+#             ff.image_display(roi=roi, noise=True, ax=ax1[ff.camera], histo_ax=ax1[8], threshold=threshold[1])
 
-        if save_image:
-            ff.save_image(uint16=False)
+#         if save_image:
+#             ff.save_image(uint16=False)
+#     if display:
+#         show_grid(fig, ax)
+#         show_grid(fig1, ax1)
+
+#     return ff_imgs
+
+def process_flat_fields(flatfield_scene: Dict[str, Image], display: bool=True) -> Dict[str, Image]:
+    """Process flat field above-bias signal mean images to give normalised
+    flat fields. Process by first median and then mean filtering the images
+    over large (128x128) kernels, then normalising to this filtered image,
+    to remove shading effects from flat field.
+
+    :param flatfield_scene: Above-bias signal flat field scene (i.e. dark 
+                            frame subtracted)
+    :type flatfield_scene: Dict[str, Image]
+    :return: Normalised flat fields
+    :rtype: Dict[str, Image]
+    """    
+    channels = list(flatfield_scene.keys())
+    for channel in channels:
+        ff = flatfield_scene[channel]
+        # duplicate the flat field image for median and mean filtering        
+        flt_ff = sig.medfilt2d(ff.img_ave, (31,31))
+        flt_ff = ndi.gaussian_filter(flt_ff, 64)
+        lst_img = ff.img_ave.copy()
+        ff.img_ave = ff.img_ave / flt_ff
+        ff.img_std = ff.img_ave * np.sqrt(2)*(ff.img_std/np.sqrt(ff.n_imgs)) / lst_img # assume pessimisstically that filtered image error is the same as the raw image error - this is still very small
+
+        # check for local mean of 1.0 across the image at scale of 15x15 pixels
+        # in central 50% of image
+        ff_check = ndi.uniform_filter(ff.img_ave[ff.height//4:3*ff.height//4, ff.width//4:3*ff.width//4], (15,15))
+        print(f'{channel}:')
+        print(f'Flat field local mean: {np.mean(ff_check)}')
+        print(f'Flat field local std. dev.: {np.std(ff_check)}')
+
+        ff.img_type = 'flatfield'
+        ff.units = '1'
+        ff.save_image(uint16=False, uint8=False, fits=False)
+        scene = ff.scene
+
     if display:
-        show_grid(fig, ax)
-        show_grid(fig1, ax1)
+        display_scene(flatfield_scene, scene, statistic='signal', window=False, draw_roi=False)       
 
-    return ff_imgs
+    return flatfield_scene
 
 def show_scene_difference(scene_1: Dict[str, Image], scene_2: Dict[str, Image]):
     channels = list(scene_1.keys())
