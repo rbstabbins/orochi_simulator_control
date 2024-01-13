@@ -41,15 +41,15 @@ INIT_EXPOSURES = {
         6: 0.099055,
         7: 0.206448,
     },
-    'SAMPLE-FIXEDLAMP': {
-        0: 0.538227,
-        1: 0.315676,
-        2: 1.237319,
-        3: 0.114834,
-        4: 0.072598,
-        5: 3.254072,
-        6: 0.093471,
-        7: 0.230196,
+    'SAMPLE-SMALL': {
+        0: 2.920403003692627,
+        1: 0.9154210090637207,
+        2: 3.5603740215301514,
+        3: 0.2895140051841736,
+        4: 0.25252100825309753,
+        5: 23.23139190673828,
+        6: 0.27225300669670105,
+        7: 0.6371769905090332,
     },
     'CHECKERBOARD': {
         0: 0.448433,
@@ -922,7 +922,7 @@ def set_camera_scene(cameras: List, scene: str='test_scene'):
         print(f'Scene set to {scene}')
         print('-----------------------------------')
 
-def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
+def find_channel_exposures(cameras: List[Channel], init_t_exp=0.03, target=0.8, n_hot=5,
                       tol=5, limit=16, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
 
@@ -938,8 +938,10 @@ def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
         print(f'Device {cam_num}')
         print('-----------------------------------')
         if init_t_exp == 'CURRENT':
-            init_t_exp = camera.get_exposure_value()
-        exposure = camera.find_exposure(init_t_exp, target, n_hot,
+            this_init_t_exp = camera.get_exposure_value()
+        else:
+            this_init_t_exp = init_t_exp
+        exposure = camera.find_exposure(this_init_t_exp, target, n_hot,
                       tol, limit, roi)
         exposures[camera.name] = exposure
         print('-----------------------------------')
@@ -1016,6 +1018,28 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
     :type save_img: bool, optional
     """
     # TODO handle grid plot in here rather than in outside scripts
+
+    # estimate time for sequence
+    total_time = 0.0
+    for camera in cameras:
+        cam_num = camera.number
+        if isinstance(repeats, dict):
+            n_repeats = repeats[cam_num]
+        else:
+            n_repeats = repeats
+
+        if isinstance(exposures, float):            
+            camera.set_exposure(exposures)
+        elif isinstance(exposures, dict):
+            camera.set_exposure(exposures[camera.name])
+        elif exposures == 'CURRENT':
+            # do nothing - exposures are set
+            pass
+        cam_time = n_repeats * camera.get_exposure_value()
+        print(f'Estimated time {camera.number}: {cam_time:.2f} seconds') 
+        total_time += cam_time
+    print(f'Estimated total time: {int(total_time//60)} minutes {int(60*(total_time/60 - total_time//60))} seconds') 
+    
     for camera in cameras:
         cam_num = camera.number
         print('-----------------------------------')
@@ -1031,7 +1055,13 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
         
         camera.session = session # set the subject string
         camera.scene = scene
-        for i in range(repeats):
+
+        if isinstance(repeats, dict):
+            n_repeats = repeats[cam_num]
+        else:
+            n_repeats = repeats
+
+        for i in range(n_repeats):
             img = camera.image_capture(roi=roi)
             if show_img:
                 title = ''
