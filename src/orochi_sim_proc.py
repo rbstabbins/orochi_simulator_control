@@ -386,10 +386,10 @@ class Image:
                 img_err = np.floor(200*img_err).astype(np.uint8)
                 metadata['units'] = f'{self.units} x200'
             else:
-                img_one = np.floor(img_one/16).astype(np.uint8)
-                img_ave = np.floor(img_ave/16).astype(np.uint8)
-                img_std = np.floor(img_std/16).astype(np.uint8)
-                img_err = np.floor(img_err/16).astype(np.uint8)
+                img_one = np.clip(np.floor(img_one/16), 0, 255).astype(np.uint8)
+                img_ave = np.clip(np.floor(img_ave/16), 0, 255).astype(np.uint8)
+                img_std = np.clip(np.floor(img_std/16), 0, 255).astype(np.uint8)
+                img_err = np.clip(np.floor(img_err/16), 0, 255).astype(np.uint8)
         elif dtype == 'uint16':
             if self.img_type == 'rfl':
                 img_one = np.floor(10000*img_one).astype(np.uint16)
@@ -701,10 +701,10 @@ class Image:
 
         # if not 8 bit convert for display
         if img.dtype != np.uint8:
-            _, img_ave, _, _ = self.roi_image()
-            if img_ave.shape == (0,0):
-                img_ave = self.img_ave
-            img = np.clip(np.floor(img * 200/np.nanmax(img_ave)), 0, 255).astype(np.uint8)
+            # _, img_ave, _, _ = self.roi_image()
+            # if img_ave.shape == (0,0):
+            img_ave = self.img_ave
+            img = np.clip(np.floor(img * 255/np.nanmax(img_ave)), 0, 255).astype(np.uint8)
 
         if roi_params is None:
             title = f'ROI Selection: {self.camera}_{self.cwl}'            
@@ -719,7 +719,11 @@ class Image:
                 # switch order of roi
                 roi = (roi[1], roi[0], roi[3], roi[2])           
                 cv2.destroyWindow(title)  
-
+            
+            if roi == (0,0,0,0):
+                print('ROI not set - resorting to previous ROI')
+                return [self.roiy, self.roix, self.roih, self.roiw]
+            
         else:
             roi = roi_params
 
