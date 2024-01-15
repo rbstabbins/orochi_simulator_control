@@ -300,7 +300,8 @@ class Image:
                    float32: bool=True,
                    uint8: bool=True,
                    uint16: bool=True,
-                   fits: bool=True) -> None:
+                   fits: bool=True,
+                   roi: bool=False) -> None:
         """Save the image and error image to the formats indicated with the flags.
 
         :param float32: output TIFF file in Float 64, defaults to True
@@ -316,37 +317,41 @@ class Image:
         if float32:            
             # write image with float 64 method            
             output = 'float32'
-            self.save_tiff(output)
+            self.save_tiff(output, roi)
             print(' TIFF float32,', end='')
 
         if uint8:
             # write image with uint8 method
             output = 'uint8'
-            self.save_tiff(output)
+            self.save_tiff(output, roi)
             print(' TIFF uint8,', end='')
 
         if uint16:
             # write image with uint16 method                        
             output = 'uint16'
-            self.save_tiff(output)
+            self.save_tiff(output, roi)
             print(' TIFF uint16,', end='')
 
         if fits:
             # write image with fits method
-            self.save_fits()
+            self.save_fits(roi)
             print(' fits,', end='')
         
         print(' formats.')
 
-    def save_tiff(self, dtype: str) -> None:
+    def save_tiff(self, dtype: str, roi: bool=False) -> None:
         """Save the image and error image to TIFF file
 
         :param dtype: output datatype, one of 'float32', 'uint8', 'uint16'
         :type dtype: str        
         """
 
-        img_ave = self.img_ave.copy()
-        img_err = self.img_std.copy()
+        if roi:
+
+
+        else:
+            img_ave = self.img_ave.copy()
+            img_err = self.img_std.copy()
 
         metadata={
                     'scene': self.scene,
@@ -405,7 +410,7 @@ class Image:
         tiff.imwrite(img_ave_file, img_ave, imagej=True, metadata=metadata)
         tiff.imwrite(img_err_file, img_err, imagej=True, metadata=metadata)
 
-    def save_fits(self) -> None:
+    def save_fits(self, roi: bool=False) -> None:
         """Save the image and error image to FITS files
         """                
         img_ave = self.img_ave
@@ -632,6 +637,8 @@ class Image:
         # if not 8 bit convert for display
         if img.dtype != np.uint8:
             _, img_ave, _, _ = self.roi_image()
+            if img_ave.shape == (0,0):
+                img_ave = self.img_ave
             img = np.clip(np.floor(img * 200/np.nanmax(img_ave)), 0, 255).astype(np.uint8)
 
         if roi_params is None:
@@ -639,12 +646,20 @@ class Image:
             roi = cv2.selectROI(title, img, showCrosshair=True) # roi output is (x,y,w,h)
             # switch order of roi
             roi = (roi[1], roi[0], roi[3], roi[2])           
-            cv2.destroyWindow(title)            
+            cv2.destroyWindow(title)   
+
+            if roi == (0,0,0,0):
+                print('ROI not set - trying again')
+                roi = cv2.selectROI(title, img, showCrosshair=True) # roi output is (x,y,w,h)
+                # switch order of roi
+                roi = (roi[1], roi[0], roi[3], roi[2])           
+                cv2.destroyWindow(title)  
+
         else:
             roi = roi_params
 
         if roi_size is not None:
-            if roi_size.isinstance(int):
+            if len(roi_size) ==1 :
                 self.roih = roi_size
                 self.roiw = roi_size
             else:
@@ -2676,7 +2691,7 @@ def save_scene(scene_imgs: Dict[str, Image],
 def display_scene(
         scene_imgs: Dict[str, Image], 
         scene: str, 
-        statistic: str='signal',
+        statistic: str='averaged',
         caption: str=None,
         window: Union[bool, str]=True, 
         draw_roi: bool=True, 
@@ -3003,7 +3018,7 @@ def set_channel_rois(
                     roi_params=roi_params, 
                     cross_hair_is_centre=cross_hair_is_centre)
         new_roi_dict[channel] = new_roi
-    display_rois(smpl_imgs, roi_name='ROI Update')
+    display_rois(smpl_imgs, roi_name='ROI Update', window='roi_centred')
     return new_roi_dict
 
 def set_roi(aligned_imgs: Dict, base_channel: str='6_550', caption: Tuple[str,str]=(None,None)) -> Dict:
@@ -3333,7 +3348,7 @@ def display_rois(smpl_imgs: Dict[str, Image], roi_name: str, window: bool=True, 
     show_grid(fig, ax)
     return fig, ax
 
-def export_images(smpl_imgs: Dict, uint8: bool=False, uint16: bool=False, roi: bool=False) -> None:
+def export_images(smpl_imgs: Dict[str, Image], uint8: bool=False, uint16: bool=False, roi: bool=False) -> None:
     """Export the image stack to tiff
 
     :param smpl_imgs: _description_
