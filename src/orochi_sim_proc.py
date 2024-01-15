@@ -3129,7 +3129,7 @@ def analyse_roi_reflectance(
         roi_name: str,
         reference_reflectance: pd.DataFrame=None,
         polyroi: bool=True,
-        show_error_limit: bool=False,        
+        show_spatial_stddev: bool=False,        
         display_roi: bool=False,
         caption: str=None) -> pd.DataFrame:
     """Analyse the reflectance over the Region of Interest, 
@@ -3150,6 +3150,14 @@ def analyse_roi_reflectance(
     img_err_means = []
     img_one_stderrs = []
     img_ave_stderrs = []
+
+    # roi derived stats output
+    img_one_snu = []
+    img_ave_snu = []
+    img_one_snr = []
+    img_one_ssnur = []
+    img_ave_snr = []
+    img_ave_ssnur = []
 
     # additional information
     channel_coords = {}
@@ -3177,6 +3185,13 @@ def analyse_roi_reflectance(
         img_one_stderrs.append(single_frame_stats[2] / np.sqrt(n_pix))
         img_ave_stderrs.append(averaged_stats[2] / np.sqrt(n_pix))
 
+        img_one_snu.append(single_frame_stats[1] / single_frame_stats[0])
+        img_ave_snu.append(averaged_stats[1] / averaged_stats[0])
+        img_one_snr.append(single_frame_stats[0] / single_frame_stats[2])
+        img_one_ssnur.append(single_frame_stats[0] / single_frame_stats[1])
+        img_ave_snr.append(averaged_stats[0] / averaged_stats[2])
+        img_ave_ssnur.append(averaged_stats[0] / averaged_stats[1])
+
         channel_coords[channel] = coords
         cwl = refl_img.cwl
         cwls.append(cwl)
@@ -3201,13 +3216,24 @@ def analyse_roi_reflectance(
         
         'Mean of Single-Frame Noise ROI': img_std_means,
         'Mean of Averaged Noise ROI': img_err_means, 
-        
-        'ROI N-pixels': n_pixs, 
+
         'Std. Err. of Mean of Single-Frame ROI': img_one_stderrs, 
         'Std. Err. of Mean of Averaged ROI':img_ave_stderrs, 
+
+                
+        'ROI N-pixels': n_pixs, 
+        'ROI Single-Frame Spatial Nonuniformity': img_one_snu,
+        'ROI Averaged Spatial Nonuniformity': img_ave_snu,
+
+        'Single-Frame SNR <signal>/<noise>': img_one_snr,
+        'Single-Frame SNR <signal>/stddev(signal)': img_one_ssnur,
+
+        'Averaged SNR <signal>/<noise>': img_ave_snr,
+        'Averaged SNR <signal>/stddev(signal)': img_ave_ssnur,
         
         'Exposure': exposures, 
         'Device': cam_nums}) #, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
+    
     results.sort_values(by='cwl', inplace=True)
 
     # prepare output directory    
@@ -3215,6 +3241,10 @@ def analyse_roi_reflectance(
     rois_dir.mkdir(parents=True, exist_ok=True)
     roi_dir = Path(rois_dir, roi_name)
     roi_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f'{roi_name}_reflectance_data.csv'
+    filepath = Path(roi_dir, filename)
+    results.to_csv(filepath)
 
     # output the raw data for each channel
     for channel in channels:
@@ -3247,10 +3277,7 @@ def analyse_roi_reflectance(
         fig.savefig(filepath, dpi=300)
 
         # show the ROI as the full window
-        # fig, ax = display_scene(refl_imgs, roi_name, statistic='single-frame', window='roi', draw_roi=True)
-        fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged', window='roi', draw_roi=True)
-        # fig, ax = display_scene(refl_imgs, roi_name, statistic='single-frame-snr', window='roi', draw_roi=True)
-        # fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged-snr', window='roi', draw_roi=True)
+        fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged', window='roi', draw_roi=True)        
 
     fig = plt.figure()
     plt.grid(visible=True)
@@ -3266,68 +3293,81 @@ def analyse_roi_reflectance(
             label='Reference Reflectance ± 1σ'
         )
 
-    plt.errorbar(
-            x=results.cwl,
-            y=results['Mean of Single-Frame ROI'],
-            yerr=results['Std. Err. of Mean of Single-Frame ROI'],
-            fmt='',
-            linestyle='',
-            ecolor='b',
-            elinewidth=1.0,
-            label='±Std. Err. of Mean of Single-Frame ROI',
-            capsize=6.0)
-    plt.errorbar(
-            x=results.cwl,
-            y=results['Mean of Single-Frame ROI'],
-            yerr=results['Mean of Single-Frame Noise ROI'],
-            fmt='',
-            linestyle='',
-            ecolor='b',
-            elinewidth=1.0,
-            label='±Mean of Single-Frame Noise ROI',
-            capsize=4.0)
-    plt.errorbar(
-            x=results.cwl,
-            y=results['Mean of Single-Frame ROI'],
-            yerr=results['Std. Dev. of Single-Frame ROI'],
-            fmt='',
-            linestyle='',   
-            ecolor='b',
-            elinewidth=1.0,
-            label='±Std. Dev. of Single-Frame ROI',
-            capsize=2.0)
+    if show_spatial_stddev:
+        plt.errorbar(
+                x=results.cwl,
+                y=results['Mean of Single-Frame ROI'],
+                yerr=results['Std. Dev. of Single-Frame ROI'],
+                fmt='',
+                linestyle='',   
+                ecolor='b',
+                elinewidth=1.0,
+                label='±Std. Dev. of Single-Frame ROI',
+                capsize=4.0)
+        title_sfx = 'Spatial Std. Dev.'
+        file_sfx = 'spatial_stddev'
+    else:
+        plt.errorbar(
+                x=results.cwl,
+                y=results['Mean of Single-Frame ROI'],
+                yerr=results['Std. Err. of Mean of Single-Frame ROI'],
+                fmt='',
+                linestyle='',
+                ecolor='b',
+                elinewidth=1.0,
+                label='±Std. Err. of Mean of Single-Frame ROI',
+                capsize=6.0)
+        plt.errorbar(
+                x=results.cwl,
+                y=results['Mean of Single-Frame ROI'],
+                yerr=results['Mean of Single-Frame Noise ROI'],
+                fmt='',
+                linestyle='',
+                ecolor='b',
+                elinewidth=1.0,
+                label='±Mean of Single-Frame Noise ROI',
+                capsize=2.0)
+        title_sfx = 'Noise Std. Err.'
+        file_sfx = 'noise_stddev'
 
-    plt.errorbar(
-            x=results.cwl,
-            y=results['Mean of Averaged ROI'],
-            yerr=results['Std. Err. of Mean of Averaged ROI'],
-            fmt='',
-            linestyle='',
-            ecolor='r',
-            elinewidth=1.0,
-            label='±Std. Err. of Mean of Averaged ROI',
-            capsize=6.0)
-    plt.errorbar(
+    if show_spatial_stddev:
+        plt.errorbar(
                 x=results.cwl,
                 y=results['Mean of Averaged ROI'],
-                yerr=results['Mean of Averaged Noise ROI'],
+                yerr=results['Std. Dev. of Averaged ROI'],
+                fmt='',
+                linestyle='',   
+                ecolor='r',
+                elinewidth=1.0,
+                label='±Std. Dev. of Averaged ROI',
+                capsize=4.0)
+        title_sfx = 'Spatial Std. Dev.'
+        file_sfx = 'spatial_stddev'
+
+    else:
+        plt.errorbar(
+                x=results.cwl,
+                y=results['Mean of Averaged ROI'],
+                yerr=results['Std. Err. of Mean of Averaged ROI'],
                 fmt='',
                 linestyle='',
                 ecolor='r',
                 elinewidth=1.0,
-                label='±Mean of Averaged Noise ROI',
-                capsize=4.0)
-    plt.errorbar(
-            x=results.cwl,
-            y=results['Mean of Averaged ROI'],
-            yerr=results['Std. Dev. of Averaged ROI'],
-            fmt='',
-            linestyle='',   
-            ecolor='r',
-            elinewidth=1.0,
-            label='±Std. Dev. of Averaged ROI',
-            capsize=2.0)
-    
+                label='±Std. Err. of Mean of Averaged ROI',
+                capsize=6.0)
+        plt.errorbar(
+                    x=results.cwl,
+                    y=results['Mean of Averaged ROI'],
+                    yerr=results['Mean of Averaged Noise ROI'],
+                    fmt='',
+                    linestyle='',
+                    ecolor='r',
+                    elinewidth=1.0,
+                    label='±Mean of Averaged Noise ROI',
+                    capsize=2.0)
+        title_sfx = 'Noise Std. Err.'
+        file_sfx = 'noise_stddev'
+        
     plt.plot(
         results.cwl,
         results['Mean of Single-Frame ROI'],
@@ -3344,26 +3384,17 @@ def analyse_roi_reflectance(
 
     plt.xlabel('Wavelength (nm)')
     plt.ylabel('Reflectance')
-    plt.title(f'{scene.capitalize()} Reflectance over ROI {roi_name.capitalize()}')
+    plt.title(f'{scene.capitalize()} Reflectance over ROI {roi_name.capitalize()} ± {title_sfx}')
 
     plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
 
-    filename = f'{roi_name}_reflectance_plot.png'
+    filename = f'{roi_name}_reflectance_plot_{file_sfx}.png'
     filepath = Path(roi_dir, filename)
     plt.savefig(filepath, dpi=300)
 
     if caption is not None:
         grid_caption(caption)        
-
-    results['Single-Frame SNR <signal>/<noise>'] = results['Mean of Single-Frame ROI'] / results['Mean of Single-Frame Noise ROI']
-    results['Single-Frame SNR <signal>/stddev(signal)'] = results['Mean of Single-Frame ROI'] / results['Std. Dev. of Single-Frame ROI']
     
-    results['Averaged SNR <signal>/<noise>'] = results['Mean of Averaged ROI'] / results['Mean of Averaged Noise ROI']
-    results['Averaged SNR <signal>/stddev(signal)'] = results['Mean of Averaged ROI'] / results['Std. Dev. of Averaged ROI']
-
-    filename = f'{roi_name}_reflectance_data.csv'
-    filepath = Path(roi_dir, filename)
-    results.to_csv(filepath)
 
     return results
 
