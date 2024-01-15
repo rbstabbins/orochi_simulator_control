@@ -178,6 +178,12 @@ class Image:
             win_x = self.winx
             win_h = self.winh
             win_w = self.winw
+        elif window == 'roi':
+            # set image coordinate limits
+            win_y = self.roiy
+            win_x = self.roix
+            win_h = self.roih
+            win_w = self.roiw
         elif window == 'roi_centred':
             # set image coordinate limits
             self.winy = (self.roiy + self.roih//2) - self.winh//2
@@ -282,6 +288,7 @@ class Image:
 
         plt.draw()
         yticks = cbar2.get_yticks()
+        yticks = yticks[yticks % 1 == 0] # drop non-integer entries
         new_yticks = [fr"{t:.0f}" if t != 0 else r"$\mu$" for t in yticks]
         cbar2.yaxis.set_major_locator(mticker.FixedLocator(yticks.tolist()))
         cbar2.set_yticklabels(new_yticks)                
@@ -600,11 +607,23 @@ class Image:
 
     def set_roi(self, 
                 threshold: int=None, 
-                roi_size: int=None, 
+                roi_size: Union[int, Tuple[int, int]]=None, 
                 roi_params: Tuple=None,
                 cross_hair_is_centre: bool=False) -> None:
         """Set a rectangular region of interest
+        
+        :param threshold: set all pixels below this value to NaN, defaults to None
+        :type threshold: int, optional
+        :param roi_size: size of the ROI, either square size or [h, w], defaults to None
+        :type roi_size: Union[int, Tuple[int, int]], optional
+        :param roi_params: parameters of the ROI, defaults to None
+        :type roi_params: Tuple, optional
+        :param cross_hair_is_centre: if True, the cross hair is the centre of the ROI, defaults to False
+        :type cross_hair_is_centre: bool, optional
+        :return: list of the ROI parameters: [y, x, h, w]
+        :rtype: List
         """
+
         if self.roi:
             _, img, _, _ = self.roi_image()
         else:
@@ -625,8 +644,12 @@ class Image:
             roi = roi_params
 
         if roi_size is not None:
-            self.roiw = roi_size
-            self.roih = roi_size
+            if roi_size.isinstance(int):
+                self.roih = roi_size
+                self.roiw = roi_size
+            else:
+                self.roih = roi_size[0]
+                self.roiw = roi_size[1]
             # update the ROI
             if cross_hair_is_centre:
                 self.roiy = int(roi[0]) - self.roih//2
@@ -3138,6 +3161,12 @@ def analyse_roi_reflectance(
         filename = f'{roi_name}_context_gridplot.png'
         filepath = Path(roi_dir, filename)
         fig.savefig(filepath, dpi=300)
+
+        # show the ROI as the full window
+        # fig, ax = display_scene(refl_imgs, roi_name, statistic='single-frame', window='roi', draw_roi=True)
+        fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged', window='roi', draw_roi=True)
+        # fig, ax = display_scene(refl_imgs, roi_name, statistic='single-frame-snr', window='roi', draw_roi=True)
+        # fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged-snr', window='roi', draw_roi=True)
 
     fig = plt.figure()
     plt.grid(visible=True)
