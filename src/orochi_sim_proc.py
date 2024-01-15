@@ -417,7 +417,9 @@ class Image:
         ave_dir = Path(out_dir, 'ave')
         std_dir = Path(out_dir, 'std')
         err_dir = Path(out_dir, 'err')
+        one_dir.mkdir(parents=True, exist_ok=True)
         ave_dir.mkdir(parents=True, exist_ok=True)
+        std_dir.mkdir(parents=True, exist_ok=True)
         err_dir.mkdir(parents=True, exist_ok=True)
 
         img_one_file =str(Path(one_dir, filename+'_one').with_suffix('.tif'))
@@ -3423,7 +3425,7 @@ def export_images(smpl_imgs: Dict[str, Image], uint8: bool=False, uint16: bool=F
     for channel in channels:
         smpl = smpl_imgs[channel]
         smpl.roi = roi
-        smpl.save_image(uint8=uint8, uint16=uint16)
+        smpl.save_image(uint8=uint8, uint16=uint16, roi=roi)
 
 def grid_plot(title: str=None, projection: str=None):
     cam_ax = {}
