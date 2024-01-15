@@ -347,11 +347,16 @@ class Image:
         """
 
         if roi:
-
+            img_one = self.img_one[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw].copy()
+            img_ave = self.img_ave[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw].copy()
+            img_std = self.img_std[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw].copy()
+            img_err = self.img_err[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw].copy()
 
         else:
+            img_one = self.img_one.copy()
             img_ave = self.img_ave.copy()
-            img_err = self.img_std.copy()
+            img_std = self.img_std.copy()
+            img_err = self.img_err.copy()
 
         metadata={
                     'scene': self.scene,
@@ -369,23 +374,33 @@ class Image:
                 }
 
         if dtype == 'float32':
+            img_one = img_one.astype(np.float32)
             img_ave = img_ave.astype(np.float32)
+            img_std = img_std.astype(np.float32)
             img_err = img_err.astype(np.float32)
         elif dtype == 'uint8':
             if self.img_type == 'rfl':
+                img_one = np.floor(200*img_one).astype(np.uint8)
                 img_ave = np.floor(200*img_ave).astype(np.uint8)
+                img_std = np.floor(200*img_std).astype(np.uint8)
                 img_err = np.floor(200*img_err).astype(np.uint8)
                 metadata['units'] = f'{self.units} x200'
             else:
+                img_one = np.floor(img_one/16).astype(np.uint8)
                 img_ave = np.floor(img_ave/16).astype(np.uint8)
+                img_std = np.floor(img_std/16).astype(np.uint8)
                 img_err = np.floor(img_err/16).astype(np.uint8)
         elif dtype == 'uint16':
             if self.img_type == 'rfl':
+                img_one = np.floor(10000*img_one).astype(np.uint16)
                 img_ave = np.floor(10000*img_ave).astype(np.uint16)
+                img_std = np.floor(10000*img_std).astype(np.uint16)
                 img_err = np.floor(10000*img_err).astype(np.uint16)
                 metadata['units'] = f'{self.units} x10000'
             else:
+                img_one = np.floor(img_one).astype(np.uint16)
                 img_ave = np.floor(img_ave).astype(np.uint16)
+                img_std = np.floor(img_std).astype(np.uint16)
                 img_err = np.floor(img_err).astype(np.uint16)
         
         cwl_str = str(int(self.cwl))
@@ -398,23 +413,38 @@ class Image:
         out_dir = Path(product_dir, dtype)
         out_dir.mkdir(parents=True, exist_ok=True)
         
+        one_dir = Path(out_dir, 'one')
         ave_dir = Path(out_dir, 'ave')
+        std_dir = Path(out_dir, 'std')
         err_dir = Path(out_dir, 'err')
         ave_dir.mkdir(parents=True, exist_ok=True)
         err_dir.mkdir(parents=True, exist_ok=True)
 
+        img_one_file =str(Path(one_dir, filename+'_one').with_suffix('.tif'))
         img_ave_file =str(Path(ave_dir, filename+'_ave').with_suffix('.tif'))
+        img_std_file =str(Path(std_dir, filename+'_std').with_suffix('.tif'))
         img_err_file =str(Path(err_dir, filename+'_err').with_suffix('.tif'))
 
-        # write camera properties to TIF using ImageJ metadata        
+        # write camera properties to TIF using ImageJ metadata 
+        tiff.imwrite(img_one_file, img_one, imagej=True, metadata=metadata)       
         tiff.imwrite(img_ave_file, img_ave, imagej=True, metadata=metadata)
+        tiff.imwrite(img_std_file, img_std, imagej=True, metadata=metadata)
         tiff.imwrite(img_err_file, img_err, imagej=True, metadata=metadata)
 
     def save_fits(self, roi: bool=False) -> None:
         """Save the image and error image to FITS files
         """                
-        img_ave = self.img_ave
-        img_err = self.img_std
+        if roi:
+            img_one = self.img_one[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw].copy()
+            img_ave = self.img_ave[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw].copy()
+            img_std = self.img_std[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw].copy()
+            img_err = self.img_err[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw].copy()
+
+        else:
+            img_one = self.img_one.copy()
+            img_ave = self.img_ave.copy()
+            img_std = self.img_std.copy()
+            img_err = self.img_err.copy()
 
         cwl_str = str(int(self.cwl))
         cam_num = str(self.camera) 
@@ -426,13 +456,33 @@ class Image:
         out_dir = Path(product_dir, 'fits')
         out_dir.mkdir(parents=True, exist_ok=True)
         
+        one_dir = Path(out_dir, 'one')
         ave_dir = Path(out_dir, 'ave')
+        std_dir = Path(out_dir, 'std')
         err_dir = Path(out_dir, 'err')
+
+        one_dir.mkdir(parents=True, exist_ok=True)
         ave_dir.mkdir(parents=True, exist_ok=True)
+        std_dir.mkdir(parents=True, exist_ok=True)
         err_dir.mkdir(parents=True, exist_ok=True)
 
+        img_one_file =str(Path(one_dir, filename+'_one').with_suffix('.fits'))
         img_ave_file =str(Path(ave_dir, filename+'_ave').with_suffix('.fits'))
+        img_std_file =str(Path(std_dir, filename+'_std').with_suffix('.fits'))
         img_err_file =str(Path(err_dir, filename+'_err').with_suffix('.fits'))
+        
+        hdu = fitsio.PrimaryHDU(img_one)
+        hdu.header['scene'] = self.scene
+        hdu.header['type'] = self.img_type
+        hdu.header['camera'] = int(self.camera)
+        hdu.header['serial'] = int(self.serial)
+        hdu.header['cwl'] = self.cwl
+        hdu.header['fwhm'] = self.fwhm
+        hdu.header['f-number'] = self.fnumber
+        hdu.header['f-length'] = self.flength
+        hdu.header['exposure'] = self.exposure
+        hdu.header['units'] = self.units
+        hdu.writeto(img_one_file, overwrite=True)
         
         hdu = fitsio.PrimaryHDU(img_ave)
         hdu.header['scene'] = self.scene
@@ -446,6 +496,19 @@ class Image:
         hdu.header['exposure'] = self.exposure
         hdu.header['units'] = self.units
         hdu.writeto(img_ave_file, overwrite=True)
+
+        hdu = fitsio.PrimaryHDU(img_std)
+        hdu.header['scene'] = self.scene
+        hdu.header['type'] = self.img_type
+        hdu.header['camera'] = int(self.camera)
+        hdu.header['serial'] = int(self.serial)
+        hdu.header['cwl'] = self.cwl
+        hdu.header['fwhm'] = self.fwhm
+        hdu.header['f-number'] = self.fnumber
+        hdu.header['f-length'] = self.flength
+        hdu.header['exposure'] = self.exposure
+        hdu.header['units'] = self.units
+        hdu.writeto(img_std_file, overwrite=True)
 
         hdu = fitsio.PrimaryHDU(img_err)
         hdu.header['scene'] = self.scene
