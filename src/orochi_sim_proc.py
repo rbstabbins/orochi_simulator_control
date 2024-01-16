@@ -220,6 +220,7 @@ class Image:
             else:
                 img = win_img
                 title = f'Image Histogram'
+                vmax = np.nanmax(img)
             counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)  
             
             # set range according to median and std of ROI
@@ -556,7 +557,14 @@ class Image:
             self.camera = self.check_property(self.camera, meta['camera'])
             self.serial = self.check_property(self.serial, meta['serial'])
             self.cwl = self.check_property(self.cwl, meta['cwl'])
+
+            # NOTE - error for 650 nm filter FWHM - recorded as 50 nm, actually only 10 nm
+            if self.cwl == 650:
+                self.fwhm = 10
+                meta['fwhm'] = 10                
+            
             self.fwhm = self.check_property(self.fwhm, meta['fwhm'])
+
             self.fnumber = self.check_property(self.fnumber, meta['f-number'])
             self.flength = self.check_property(self.flength, meta['f-length'])
             self.exposure = self.check_property(self.exposure, meta['exposure'])
@@ -728,7 +736,7 @@ class Image:
             roi = roi_params
 
         if roi_size is not None:
-            if len(roi_size) ==1 :
+            if isinstance(roi_size, int) :
                 self.roih = roi_size
                 self.roiw = roi_size
             else:
@@ -753,13 +761,21 @@ class Image:
 
         return [self.roiy, self.roix, self.roih, self.roiw]
 
-    def set_polyroi(self, polyroi: np.array=None, threshold: int=None, roi: bool=False) -> None:
+    def set_polyroi(self, 
+                polyroi: np.array=None, 
+                threshold: int=None, 
+                roi: bool=False, 
+                disparity: np.array=None) -> None:
         """Set an arbitrary polygon region of interest
         """
         
         if polyroi is not None:
-            self.polyroi = polyroi
-            return polyroi
+            if disparity is None:
+                self.polyroi = polyroi
+                return polyroi
+            if disparity is not None:
+                # shift the polyroi coordinates according to the disparity
+                
 
         if threshold is None:
 
@@ -873,9 +889,11 @@ class DarkImage(Image):
     
 class LightImage(Image):
     """Class for handling Light Images, inherits Image class."""
-    def __init__(self, scene_path: Path, product_path: Path, channel: str, img_type: str='img') -> None:
+    def __init__(self, scene_path: Path, product_path: Path, channel: str, img_type: str='img', calibration_dir: Path=None) -> None:
         Image.__init__(self, scene_path, product_path, channel, img_type)
-        self.mtx, self.new_mtx, self.dist = self.load_calibration()        
+        if calibration_dir is not None:            
+            self.calibration_dir = calibration_dir
+            self.mtx, self.new_mtx, self.dist = self.load_calibration()        
         self.f_length = None
         self.dif_img = None
 
@@ -995,8 +1013,7 @@ class LightImage(Image):
     def load_calibration(self) -> Tuple:             
         # intrinsic matrix
         mtx_path = Path(
-                    self.scene_dir.parent.parent, 
-                    'calibration', 
+                    self.calibration_dir,
                     'channels', 
                     'intrinsic_matrices',
                     self.channel)
@@ -1008,8 +1025,7 @@ class LightImage(Image):
 
         # new intrinsic matrix
         new_mtx_path = Path(
-                    self.scene_dir.parent.parent, 
-                    'calibration', 
+                    self.calibration_dir,
                     'channels', 
                     'new_intrinsic_matrices',
                     self.channel)
@@ -1021,8 +1037,7 @@ class LightImage(Image):
 
         # distortion coefficients
         dist_path = Path(
-                    self.scene_dir.parent.parent,
-                    'calibration',
+                    self.calibration_dir,
                     'channels',
                     'distortion_coefficients',
                     self.channel)
@@ -1076,7 +1091,7 @@ class LightImage(Image):
 
         return cal_dict
     
-    def align_cali_source(self, source: Image) -> None:
+    def align_cali_source(self, source: Image, update_roi: bool=False) -> None:
         """Align the given calibration image to the image, by finding
         the source and sample centre points through Gaussian fitting around
         the ROI coordinates. Return the new cali source.
@@ -1110,6 +1125,8 @@ class LightImage(Image):
         tgt_abs_x0 = x0 + self.roix-self.winw//2
 
         # fit a 2D Gaussian to cali_source_img using the image ROI as an initial estimate
+        yi, xi = np.mgrid[:source.winh, :source.winw]
+        xyi = np.vstack([xi.ravel(), yi.ravel()])
         guess = [np.nanmax(source_img), source.winw//2, source.winh//2, 0.001, 0.001, 0.001]
         pred_params, uncert_cov = opt.curve_fit(self.gauss2d, xyi, source_img.ravel(), p0=guess)
 
@@ -1120,6 +1137,9 @@ class LightImage(Image):
         # compute the shift required to align the images
         shift_y = np.round(tgt_abs_y0 - src_abs_y0)
         shift_x = np.round(tgt_abs_x0 - src_abs_x0)
+
+        print(f'   Shifting Vertical by {shift_y} pixels')
+        print(f'   Shifting Horizontal by {shift_x} pixels')
 
         # img_one
         source.img_one = np.roll(source.img_one, int(shift_y), axis=0)
@@ -1136,6 +1156,11 @@ class LightImage(Image):
         # img_err
         source.img_err = np.roll(source.img_err, int(shift_y), axis=0)
         source.img_err = np.roll(source.img_err, int(shift_x), axis=1)
+
+        # update the cali_source roi and window to match self
+        if update_roi:
+            self.roiy = int(np.round(tgt_abs_y0)) - self.roih//2
+            self.roix = int(np.round(tgt_abs_x0)) - self.roiw//2
 
         # update the cali_source roi and window to match self
         source.roiy = self.roiy
@@ -1215,7 +1240,7 @@ class CalibrationImage(Image):
         band = np.where((data['wavelength'] > lo) & (data['wavelength'] < hi))
         # set the reference reflectance and error
         self.reference_reflectance = np.mean(data['reflectance'][band])
-        self.reference_reflectance_err = np.std(data['reflectance'][band])
+        self.reference_reflectance_err = np.mean(data['uncertainty'][band]) / np.sqrt(len(band))
 
     def mask_target(self, clip: float=0.10):
         """Mask the calibration target in the image."""
@@ -1627,10 +1652,9 @@ class CoAlignedImage(Image):
             plt.show()
 
 class GeoCalImage(Image):
-    def __init__(self, source_image: LightImage, chkrbrd: Tuple, roi: bool=False) -> None:
-        self.dir = source_image.dir
+    def __init__(self, source_image: LightImage, chkrbrd: Tuple, roi: bool=False) -> None:        
         self.scene_dir = source_image.scene_dir
-        # TODO check scene directory exists
+        self.products_dir = source_image.products_dir        
         self.scene = source_image.scene
         self.channel = source_image.channel
         self.img_type = 'geo'
@@ -1646,16 +1670,22 @@ class GeoCalImage(Image):
         self.fnumber = source_image.fnumber
         self.flength = source_image.flength
         self.exposure = source_image.exposure
-        self.units = source_image.units
-        self.n_imgs = source_image.n_imgs
-        self.img_ave = source_image.img_ave
-        self.img_std = source_image.img_std
         self.roix = source_image.roix
         self.roiy = source_image.roiy
         self.roiw = source_image.roiw
         self.roih = source_image.roih
+        self.winx = source_image.winx
+        self.winy = source_image.winy
+        self.winh = source_image.winh
+        self.winw = source_image.winw        
         self.roi = roi
         self.polyroi = source_image.polyroi
+        self.units = source_image.units
+        self.n_imgs = source_image.n_imgs
+        self.img_one = self.img2uint8(source_image.img_one)
+        self.img_ave = self.img2uint8(source_image.img_ave)        
+        self.img_std = self.img2uint8(source_image.img_std)
+        self.img_err = self.img2uint8(source_image.img_err)
         self.crows = chkrbrd[0]
         self.ccols = chkrbrd[1]
         self.chkrsize = chkrbrd[2]
@@ -1666,6 +1696,19 @@ class GeoCalImage(Image):
         self.p_mtx = None
         self.calibration_error = None
         self.f_length = None
+
+    @staticmethod
+    def img2uint8(img: np.ndarray) -> np.ndarray:
+        """Convert a given image to uint8 format.
+
+        :param img: Input image, assumed in 12-bit depth
+        :type img: np.ndarray
+        :return: Output image, in uint8 format
+        :rtype: np.ndarray
+        """        
+        # convert to 8-bit        
+        img = np.clip(np.floor(img/16), 0, 255).astype(np.uint8)
+        return img
 
     def export_calibration(self):
         """Export the intrinsic and extrinsic channel calibration parameters
@@ -1737,7 +1780,7 @@ class GeoCalImage(Image):
 
     def find_corners(self):
         # Find the chessboard corners
-        gray = np.floor(self.img_ave/16).astype(np.uint8) # note hack of division by 17 to allow for overexposed pixels
+        gray = self.img_ave # np.floor(self.img_ave/16).astype(np.uint8) # note hack of division by 17 to allow for overexposed pixels
         if self.roi:
             gray = gray[self.roix:self.roix+self.roiw, self.roiy:self.roiy+self.roih]
         ret, corners = cv2.findChessboardCorners(gray, (self.crows,self.ccols), flags=cv2.CALIB_CB_ADAPTIVE_THRESH+cv2.CALIB_CB_NORMALIZE_IMAGE)
@@ -1762,7 +1805,7 @@ class GeoCalImage(Image):
 
     def show_corners(self, ax: object=None, corner_roi: bool=False):
         # Draw and display the corners
-        gray = np.floor(self.img_ave/16).astype(np.uint8)
+        gray =self.img_ave # np.floor(self.img_ave/16).astype(np.uint8)
         rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
         img = cv2.drawChessboardCorners(rgb, (self.crows,self.ccols), self.corner_points, self.all_corners)
         if self.roi:
@@ -1789,7 +1832,7 @@ class GeoCalImage(Image):
         # project a 3D axis onto the image
         axis = np.float32([[1,0,0], [0,1,0], [0,0,-1]]).reshape(-1,3)
         axis *= self.chkrsize * 5 # default to 5 square axes
-        img = np.floor(self.img_ave/16).astype(np.uint8)
+        img = self.img_ave #np.floor(self.img_ave/16).astype(np.uint8)
         
         orig_img = img.copy()
 
@@ -1870,9 +1913,10 @@ class GeoCalImage(Image):
         return mtx, new_mtx, dist, rvecs, tvecs
 
 class StereoPair():
-    def __init__(self, src_image: LightImage, dst_image: LightImage) -> None:
+    def __init__(self, src_image: LightImage, dst_image: LightImage, calibration_dir: Path) -> None:
         self.src = src_image
-        self.dst = dst_image
+        self.dst = dst_image  
+        self.calibration_dir = calibration_dir      
         self.pair = f'A{self.src.channel}_B{self.dst.channel}'        
         self.scene_dir = self.src.scene_dir
         self.r_mtx = None
@@ -1903,8 +1947,7 @@ class StereoPair():
         # calibration
         # rotation matrix
         rmtx_path = Path(
-            self.src.scene_dir.parent.parent, 
-            'calibration', 
+            self.calibration_dir, 
             'stereo_pairs', 
             'rotation_matrices',
             self.pair)                         
@@ -1913,8 +1956,7 @@ class StereoPair():
 
         # translation vector
         tmtx_path = Path(
-            self.src.scene_dir.parent.parent, 
-            'calibration', 
+            self.calibration_dir,
             'stereo_pairs', 
             'translation_vectors',
             self.pair)                           
@@ -1923,8 +1965,7 @@ class StereoPair():
 
         # essential matrix
         emtx_path = Path(
-            self.src.scene_dir.parent.parent, 
-            'calibration', 
+            self.calibration_dir,
             'stereo_pairs', 
             'essential_matrices',
             self.pair)                           
@@ -1933,8 +1974,7 @@ class StereoPair():
 
         # fundamental matrix
         fmtx_path = Path(
-            self.src.scene_dir.parent.parent, 
-            'calibration', 
+            self.calibration_dir,
             'stereo_pairs', 
             'fundamental_matrices',
             self.pair)                           
@@ -1966,8 +2006,7 @@ class StereoPair():
         # calibration
         # rotation matrix
         rmtx_path = Path(
-            self.scene_dir.parent.parent, 
-            'calibration', 
+            self.calibration_dir,             
             'stereo_pairs', 
             'rotation_matrices',
             self.pair)
@@ -1977,8 +2016,7 @@ class StereoPair():
         np.save(pair_rmtx_path.with_suffix('.npy').resolve(), self.r_mtx)
         # translation vector
         tmtx_path = Path(
-            self.scene_dir.parent.parent, 
-            'calibration', 
+            self.calibration_dir, 
             'stereo_pairs', 
             'translation_vectors',
             self.pair)
@@ -1990,8 +2028,7 @@ class StereoPair():
         # scene
         # fundamental matrix
         fmtx_path = Path(
-            self.scene_dir.parent.parent, 
-            'calibration', 
+            self.calibration_dir, 
             'stereo_pairs', 
             'fundamental_matrices',
             self.pair)
@@ -2001,8 +2038,7 @@ class StereoPair():
         np.save(pair_fmtx_path.with_suffix('.npy').resolve(), self.f_mtx)
         # essential matrix
         emtx_path = Path(
-            self.scene_dir.parent.parent, 
-            'calibration', 
+            self.calibration_dir, 
             'stereo_pairs', 
             'essential_matrices',
             self.pair)
@@ -2083,7 +2119,7 @@ class StereoPair():
         """        
         if view == 'dst':
             r,c = self.dst.img_ave.shape
-            img = (np.floor(self.dst.img_ave)/16).astype(np.uint8)
+            img = self.dst.img_ave # (np.floor(self.dst.img_ave)/16).astype(np.uint8)
             img = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
             pts = self.dst_pts
             lines = self.dst_elines
@@ -2091,7 +2127,7 @@ class StereoPair():
         elif view == 'src':
             r,c = self.src.img_ave.shape
             if ax.title.get_text() == '':
-                img = (np.floor(self.src.img_ave)/16).astype(np.uint8)
+                img = self.src.img_ave # (np.floor(self.src.img_ave)/16).astype(np.uint8)
                 img = cv2.cvtColor(img,cv2.COLOR_GRAY2BGR)
             else:
                 img = ax.get_images()[0]._A
@@ -2159,8 +2195,8 @@ class StereoPair():
             self.dst.new_mtx, self.dst.dist, self.dst_r, self.dst_p, 
             (self.dst.width, self.dst.height), cv2.CV_32FC1)
         
-        src_img = np.clip(np.floor(self.src.img_ave/16),0,255).astype(np.uint8)        
-        dst_img = np.clip(np.floor(self.dst.img_ave/16),0,255).astype(np.uint8)        
+        src_img = self.src.img_ave.copy() # np.clip(np.floor(self.src.img_ave/16),0,255).astype(np.uint8)        
+        dst_img = self.dst.img_ave.copy() # np.clip(np.floor(self.dst.img_ave/16),0,255).astype(np.uint8)        
         
         if polyroi:
             # apply the poly roi mask
@@ -2175,22 +2211,21 @@ class StereoPair():
 
         # set all pixels outside the roi to 0
         if roi:
-            src_img[:self.src.roix,:] = 0
-            src_img[self.src.roix+self.src.roiw:,:] = 0
-            src_img[:,:self.src.roiy] = 0
-            src_img[:,self.src.roiy+self.src.roih:] = 0
+            src_img[:, :self.src.roix] = 0
+            src_img[:,self.src.roix+self.src.roiw:] = 0
+            src_img[:self.src.roiy,:] = 0
+            src_img[self.src.roiy+self.src.roih:,:] = 0
 
-            dst_img[:self.dst.roix,:] = 0
-            dst_img[self.dst.roix+self.dst.roiw:,:] = 0
-            dst_img[:,:self.dst.roiy] = 0
-            dst_img[:,self.dst.roiy+self.dst.roih:] = 0
+            dst_img[:,:self.dst.roix] = 0
+            dst_img[:,self.dst.roix+self.dst.roiw:] = 0
+            dst_img[:self.dst.roiy,:] = 0
+            dst_img[self.dst.roiy+self.dst.roih:,:] = 0
         
         src_img = cv2.remap(src_img, self.src_map1, self.src_map2, cv2.INTER_LINEAR)
         dst_img = cv2.remap(dst_img, self.dst_map1, self.dst_map2, cv2.INTER_LINEAR)
                  
         self.src_rect = src_img
         self.dst_rect = dst_img
-
 
         title = f'{np.array2string(self.tvec, precision=2)} {self.dst.camera}: {self.dst.cwl} nm'
         
@@ -2226,6 +2261,14 @@ class StereoPair():
         """ 
         src_img = self.src_rect
         dst_img = self.dst_rect
+
+        # check if uint8
+        if src_img.dtype != np.int8:
+            if np.nanmax(src_img) > 255:
+                src_img = np.clip(np.floor(src_img/16), 0 , 255).astype(np.uint8)
+        if dst_img.dtype != np.int8:
+            if np.nanmax(dst_img) > 255:
+                dst_img = np.clip(np.floor(dst_img/16), 0 , 255).astype(np.uint8)        
         
         if self.v_alignment:
             if self.tvec[1] < -0.05:
@@ -2252,15 +2295,17 @@ class StereoPair():
         
         # estimate the disparity
         z_est = 0.8 # 0.8 m
+        z_min = z_est - 0.10
+        z_max = z_est + 0.05
         f = self.src.new_mtx[0][0]
         b = self.baseline
-        d_max = np.round(f*b/(z_est*0.85)).astype(np.int16)
-        d_min = np.round(f*b/(z_est*1.15)).astype(np.int16)
+        d_max = np.round(f*b/(z_min)).astype(np.int16)
+        d_min = np.round(f*b/(z_max)).astype(np.int16)
         d_range = (np.round((d_max-d_min)/16)*16).astype(np.int16)
 
         # StereoSGBM Parameters
         prefiltercap = 5 # 5 - 255
-        block_size = 10 # 1 - 255
+        block_size = 5 # 1 - 255
         min_disp = d_min # -128 - +128
         num_disp = d_range # 16 - 256 (divisble by 16)
         uniqRatio = 15 # 0 - 100
@@ -2295,13 +2340,16 @@ class StereoPair():
 
         # show the disparityS
         if ax is None:
-            # disp_roi = self.dst_rect_roi
-            # disp_crop = self.disparity[disp_roi['y']:disp_roi['y']+disp_roi['h'], disp_roi['x']:disp_roi['x']+disp_roi['w']]
+            disp_roi = self.src_rect_roi
+            disp_crop = self.disparity[disp_roi['y']:disp_roi['y']+disp_roi['h'], disp_roi['x']:disp_roi['x']+disp_roi['w']]            
+            disp_img = self.src_rect[disp_roi['y']:disp_roi['y']+disp_roi['h'], disp_roi['x']:disp_roi['x']+disp_roi['w']]
             fig, ax = plt.subplots()
-
-        disp_crop = self.disparity
+        else:
+            disp_crop = self.disparity
+            disp_img = self.src_rect
         disp = ax.imshow(disp_crop, origin='upper', cmap='gray')
-        # ax.imshow(self.dst_rect, origin='upper', cmap='Reds', alpha=0.5)
+        ax.imshow(disp_img, origin='upper', cmap='Reds', alpha=0.5)
+
         im_ratio = disp_crop.shape[1]/disp_crop.shape[0]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio)            
         ax.set_title(f'{self.dst.camera}: {self.dst.cwl} nm')
@@ -2498,8 +2546,8 @@ class StereoPair():
             src_img = self.src_rect
             dst_img = self.dst_rect
         else:
-            src_img = np.floor(self.src.img_ave/16).astype(np.uint8)            
-            dst_img = np.floor(self.dst.img_ave/16).astype(np.uint8)
+            src_img = self.src.img_ave # np.floor(self.src.img_ave/16).astype(np.uint8)            
+            dst_img = self.dst.img_ave # np.floor(self.dst.img_ave/16).astype(np.uint8)
         img = cv2.drawMatches(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
         # img = cv2.drawMatchesKnn(src_img, self.src_pts, dst_img, self.dst_pts, self.matches, None)
         if ax is None:
@@ -2637,6 +2685,7 @@ def load_scene(
         dark_path: Path=None, 
         flat_path: Path=None,
         product_path: Path=None,
+        calibration_path: Path=None,
         img_type: str='img',
         display: bool=True,
         display_dark: bool=False,
@@ -2685,7 +2734,7 @@ def load_scene(
     dark_imgs = {}
 
     for channel in channels:
-        chnl_scene = LightImage(scene_path, product_path, channel, img_type=img_type)
+        chnl_scene = LightImage(scene_path, product_path, channel, img_type=img_type, calibration_dir=calibration_path)
         chnl_scene.image_load()
         print(f'Loading {scene}: {chnl_scene.camera} ({int(chnl_scene.cwl)} nm)')
 
@@ -2820,13 +2869,18 @@ def show_scene_difference(scene_1: Dict[str, Image], scene_2: Dict[str, Image]):
 def align_scenes(
         target_scene: Dict[str, LightImage], 
         source_scene: Dict[str, LightImage], 
-        display: bool=True) -> Dict:
+        display: bool=True,
+        update_rois: bool=False) -> Dict:
     """Align the source scene to the target scene.
 
     :param target_scene: Dictionary of target scene images
     :type target_scene: Dict
     :param source_scene: Dictionary of source scene images
     :type source_scene: Dict
+    :param display: Display the difference between the target and source scenes, defaults to True
+    :type display: bool, optional
+    :param update_rois: Update the ROI of the target scene with the fitted Gauss coordinates, defaults to False
+    :type update_rois: bool, optional
     :return: Dictionary of aligned source scene images
     :rtype: Dict
     """
@@ -2840,7 +2894,7 @@ def align_scenes(
         target = target_scene[channel]
         source = source_scene[channel]
         print(f'Aligning {target.scene}: {target.camera} ({int(target.cwl)} nm) to {source.scene}: {source.camera} ({int(source.cwl)} nm)')
-        align = target.align_cali_source(source)        
+        align = target.align_cali_source(source, update_roi=update_rois)        
         aligned_scene[channel] = align
     
     if display:
@@ -2995,11 +3049,11 @@ def load_reference_reflectance(refl_imgs, reference_filename: str):
             cwls.append(camera.cwl)
             means.append(np.mean(data['reflectance'][band]))
             stds.append(np.std(data['reflectance'][band]))
-        reference_reflectance = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'standard deviation':stds})
+        reference_reflectance = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'error':stds})
         reference_reflectance.sort_values(by='cwl', inplace=True)
         return reference_reflectance
 
-def get_channel_reference_reflectance(cali_coeffs: Dict) -> pd.DataFrame:
+def get_channel_reference_reflectance(cali_coeffs: Dict[str, ReflectanceImage]) -> pd.DataFrame:
     """Get the reference reflectance and error for each channel.
 
     :param cali_coeffs: Dictionary of CalibrationImage objects for each channel
