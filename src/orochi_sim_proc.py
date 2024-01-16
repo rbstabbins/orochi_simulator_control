@@ -764,19 +764,14 @@ class Image:
     def set_polyroi(self, 
                 polyroi: np.array=None, 
                 threshold: int=None, 
-                roi: bool=False, 
-                disparity: np.array=None) -> None:
+                roi: bool=False) -> None:
         """Set an arbitrary polygon region of interest
         """
         
-        if polyroi is not None:
-            if disparity is None:
-                self.polyroi = polyroi
-                return polyroi
-            if disparity is not None:
-                # shift the polyroi coordinates according to the disparity
+        if polyroi is not None:            
+            self.polyroi = polyroi
+            return polyroi
                 
-
         if threshold is None:
 
             default_backend = mpl.get_backend()
