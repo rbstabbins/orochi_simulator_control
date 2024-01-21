@@ -340,7 +340,16 @@ class Channel:
         return ret
 
     def set_exposure(self, exposure: float) -> int:
+
         self.set_property('Exposure', 'Auto', 0, 'Switch')
+        if exposure > 0.45:
+            self.set_frame_rate(1.0)
+        elif exposure <= 0.45:
+            self.set_frame_rate(30.0)
+        
+        if exposure < 0.02:
+            print('Warning: Exposures less than 0.02 s may scale unpredictably with exposure time')
+
         self.set_property('Exposure', 'Value', exposure, 'AbsoluteValue')
 
     def get_property(self, property: str, element: str, interface: str, print_state: bool=False):
@@ -438,9 +447,10 @@ class Channel:
 
         # ensure exposure setting is manual
         print('Initiating search:')
-        self.set_property('Exposure', 'Auto', 0, 'Switch')
-        self.set_property('Exposure', 'Value', init_t_exp, 'AbsoluteValue')
-        t_min, t_max = 1.0/16666, 50.0 # self.get_exposure_range()
+        # self.set_property('Exposure', 'Auto', 0, 'Switch')
+        # self.set_property('Exposure', 'Value', init_t_exp, 'AbsoluteValue')
+        self.set_exposure(init_t_exp)
+        t_min, t_max = 1.0/16666, 40.0 # self.get_exposure_range()
 
         target = target * self.max_dn
 
@@ -459,7 +469,7 @@ class Channel:
                 distance = np.abs(target - k_quantile)
                 success = distance <= tol # check against target
                 print(f'Quantile: {k_quantile}, Target: {target}')
-            except:
+            except: # if there is an image read error, default to a change in exposure of 10%
                 k_quantile = 1.1 * t_exp_scale * set_t_exp
 
             if success == True:
@@ -468,8 +478,10 @@ class Channel:
                 searching = False # update searcing or continue
                 return t_exp
 
+            # if the quantile is too high, increase the exposure scaling factor
             if k_quantile >= self.max_dn:
                 k_quantile = 5*k_quantile
+            # if the quantile is too low, decrease the exposure scaling factor
             elif k_quantile <= 0.1 * self.max_dn:
                 k_quantile = k_quantile/5
 
@@ -486,16 +498,18 @@ class Channel:
                 new_t_exp = t_min
             elif new_t_exp > t_max:
                 print(f'Exposure out of range. Setting to {t_max}')
+                print('WARNING: Large exposure required. Consider aborting and checking ROI and Illumination.')
                 new_t_exp = t_max
-            self.set_property('Exposure', 'Value', new_t_exp, 'AbsoluteValue')
+            # self.set_property('Exposure', 'Value', new_t_exp, 'AbsoluteValue')
+            self.set_exposure(new_t_exp)
             # check that the exposure has been set
             set_t_exp = self.get_exposure_value()
-            print(f'Exposure set to {set_t_exp:0.6f} (err of {new_t_exp - set_t_exp})')
+            print(f'Exposure set to {set_t_exp:0.6f}')
             trial_n+=1 # increment the counter
             failure = trial_n > limit
 
             if failure == True:
-                print(f'Failure to satisfy tolerance. Exiting routine.')
+                print(f'Fail: {distance} DN > {tol} Tol. DN. Exiting routine.')
                 t_exp = self.get_property('Exposure', 'Value', 'AbsoluteValue')
                 searching = False
                 return t_exp
@@ -670,6 +684,8 @@ class Channel:
         print(f'Imaging with Exposure: {exposure:0.6f} s')
         if exposure > 0.45:
             self.set_frame_rate(1.0) # set frame rate to 1 fps if exposure is too long
+        elif exposure < 0.02:
+            print()
         self.ic.IC_StartLive(self.grabber,0)
         wait_time = int(np.max([5.0, 2*exposure])*1E3) # time in ms to wait to receive frame
         if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
@@ -701,7 +717,7 @@ class Channel:
                 y = self.camera_props['roiy']
                 w = self.camera_props['roiw']
                 h = self.camera_props['roih']
-                image = image[x:x+w,y:y+h]
+                image = image[y:y+h, x:x+w] # NOTE - update of x and y coordinates! 21/01/2024 R Stabbins
             # print(f'+Good exposure {exposure} Image recieved')
         else:
             print(f'-Bad exposure {exposure} No image recieved in {wait_time} ms')
@@ -728,7 +744,13 @@ class Channel:
             ax.set_title(title)
 
         # default to show image as ROI with 2x size window for context
-        if window == "roi":
+        if img_arr.shape[0] == self.camera_props['roih'] and img_arr.shape[1] == self.camera_props['roiw']:
+            win_y = 0
+            win_x = 0
+            win_h = self.camera_props['roih']
+            win_w = self.camera_props['roiw']
+            draw_roi = False
+        elif window == "roi":
             win_y = self.camera_props['roiy']
             win_x = self.camera_props['roix']
             win_h = self.camera_props['roih']
@@ -761,15 +783,18 @@ class Channel:
         # draw window/ROI
         if draw_roi:
             rect = patches.Rectangle((self.camera_props['roix'], self.camera_props['roiy']), self.camera_props['roiw'], self.camera_props['roih'], linewidth=1, edgecolor='r', facecolor='none')        
-            ax.add_patch(rect)   
+            ax.add_patch(rect) 
+            roi_img = img_arr[self.camera_props['roiy']:self.camera_props['roiy']+self.camera_props['roih'], self.camera_props['roix']:self.camera_props['roix']+self.camera_props['roiw']]
+        else:
+            roi_img = img_arr
 
         # add histogram
         if histo_ax is not None:
-            counts, bins = np.histogram(win_img[np.nonzero(np.isfinite(win_img))], bins=128)
+            counts, bins = np.histogram(roi_img[np.nonzero(np.isfinite(roi_img))], bins=128)
             histo_ax.hist(bins[:-1], bins, weights=counts,
                         label=f"{self.camera_props['number']}_{int(self.camera_props['cwl'])}",
                         log=True, fill=False, stacked=True, histtype='step')
-            histo_ax.set_xlabel('DN')
+            histo_ax.set_xlabel('Region of Interest DN')
             # plt.tight_layout()
             histo_ax.legend()
 
@@ -1166,6 +1191,8 @@ def capture_channel_images(cameras: List[Channel], exposures: Union[float, Dict]
                 else:
                     this_ax = None
                     histo_ax = None
+                if roi:
+                    show_img ='roi'
                 camera.show_image(img, title, ax=this_ax, histo_ax=histo_ax, window=show_img, draw_roi=True)
             if save_img:
                 camera.save_image(str(i), img_type, img)
@@ -1420,8 +1447,9 @@ def check_f_numbers(cameras) -> None:
         print('-----------------------------------')
         print(f'Device {cam_num}')
         print('-----------------------------------')
-        camera.set_property('Exposure', 'Value', t_exp_cali, 'AbsoluteValue')
-        camera.set_property('Exposure', 'Auto', 0, 'Switch')
+        # camera.set_property('Exposure', 'Value', t_exp_cali, 'AbsoluteValue')
+        # camera.set_property('Exposure', 'Auto', 0, 'Switch')
+        camera.set_exposure(t_exp_cali)
         img = camera.image_capture(roi=True)
         # plot histogram
         counts, bins = np.histogram(img[np.nonzero(np.isfinite(img))], bins=128)
