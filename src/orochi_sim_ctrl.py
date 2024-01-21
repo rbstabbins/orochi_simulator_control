@@ -12,6 +12,7 @@ import time
 from typing import Dict, List, Tuple, Union
 import cv2
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter
@@ -554,33 +555,96 @@ class Channel:
         title = f'Band {cam_num} ({self.name}) ROI Check: ROI'
         self.show_image(img, title)
 
-    def set_roi_manually(self, roi_size: int=None) -> None:
+    def set_roi_manually(self,
+                        image: np.ndarray=None, 
+                        roi_size: Union[int, Tuple[int,int]]=None,
+                        roi_params: Tuple[int,int,int,int]=None,
+                        cross_hair_is_centre: bool=False) -> None:
         """Set the ROI of the given channel manually.
-        """        
-        channel_view = self.image_capture(roi=False)
+        """  
+
+        # channel_view = self.image_capture(roi=False)
+
+        # # convert to 8-bit for cv2 view
+        # if self.max_dn == 2**8 - 1:
+        #     channel_view = channel_view.astype(np.uint8)
+        # elif self.max_dn == 2**12 - 2:
+        #     channel_view = (channel_view / 2**4).astype(np.uint8)
+
+        # roi = cv2.selectROI(f'ROI Selection: {self.camera_props["number"]}_{int(self.camera_props["cwl"])}', channel_view, showCrosshair=True)
+
+        # print(roi)
+        # xlim = roi[1]
+        # ylim = roi[0]
+        # if roi_size is None:
+        #     roi_size = roi[2]
+        # else:
+        #     print(f'Overwriting ROI size with specified value: {roi_size}')
+
+        # # update the camera properties with the coodinates
+        # self.camera_props['roix'] = xlim
+        # self.camera_props['roiy'] = ylim
+        # self.camera_props['roiw'] = roi_size
+        # self.camera_props['roih'] = roi_size
+# ------
+        
+        if image is None:
+            img = self.image_capture(roi=False)
+        else:
+            img = image
+
         # convert to 8-bit for cv2 view
         if self.max_dn == 2**8 - 1:
-            channel_view = channel_view.astype(np.uint8)
+            img = img.astype(np.uint8)
         elif self.max_dn == 2**12 - 2:
-            channel_view = (channel_view / 2**4).astype(np.uint8)
+            img = (img / 2**4).astype(np.uint8)
 
-        roi = cv2.selectROI(f'ROI Selection: {self.camera_props["number"]}_{int(self.camera_props["cwl"])}', channel_view, showCrosshair=True)
+        if roi_params is None:
+            title = f'ROI Selection: {self.camera_props["number"]}_{int(self.camera_props["cwl"])}'            
+            roi = cv2.selectROI(title, img, showCrosshair=True) # roi output is (x,y,w,h)
+            # switch order of roi to (y, x, h, w)
+            roi = (roi[1], roi[0], roi[3], roi[2])           
+            cv2.destroyWindow(title)   
 
-        print(roi)
-        xlim = roi[1]
-        ylim = roi[0]
-        if roi_size is None:
-            roi_size = roi[2]
+            if roi == (0,0,0,0):
+                print('ROI not set - trying again')
+                roi = cv2.selectROI(title, img, showCrosshair=True) # roi output is (x,y,w,h)
+                # switch order of roi to (y, x, h, w)
+                roi = (roi[1], roi[0], roi[3], roi[2])           
+                cv2.destroyWindow(title)  
+            
+            if roi == (0,0,0,0):
+                print('ROI not set - resorting to previous ROI')
+                return [self.camera_props['roiy'], self.camera_props['roix'], self.camera_props['roih'], self.camera_props['roiw']]
+            
         else:
-            print(f'Overwriting ROI size with specified value: {roi_size}')
+            roi = roi_params
 
-        # update the camera properties with the coodinates
-        self.camera_props['roix'] = xlim
-        self.camera_props['roiy'] = ylim
-        self.camera_props['roiw'] = roi_size
-        self.camera_props['roih'] = roi_size
+        if roi_size is not None:
+            if isinstance(roi_size, int) :
+                self.camera_props['roih'] = roi_size
+                self.camera_props['roiw'] = roi_size
+            else:
+                self.camera_props['roih'] = roi_size[0]
+                self.camera_props['roiw'] = roi_size[1]
+            # update the ROI
+            if cross_hair_is_centre:
+                self.camera_props['roiy'] = int(roi[0]) - self.camera_props['roih']//2
+                self.camera_props['roix'] = int(roi[1]) - self.camera_props['roiw']//2      
+            else:
+                self.camera_props['roiy'] = int(roi[0])        
+                self.camera_props['roix'] = int(roi[1])
+        else:
+            self.camera_props['roiy'] = int(roi[0])
+            self.camera_props['roix'] = int(roi[1])
+            self.camera_props['roih'] = int(roi[2])
+            self.camera_props['roiw'] = int(roi[3])
+            if cross_hair_is_centre:
+                print('Using manual ROI: cross_hair_is_centre = True ignored')
 
-        cv2.destroyAllWindows()
+        print(f'{self.camera_props["number"]}_{int(self.camera_props["cwl"])} ROI set to: top-left corner:(y: {self.camera_props["roiy"]}, x: {self.camera_props["roix"]}), h: {self.camera_props["roih"]} w: {self.camera_props["roiw"]}')
+
+        return [self.camera_props['roiy'], self.camera_props['roix'], self.camera_props['roih'], self.camera_props['roiw']]
 
     def check_roi_uniformity(self, n: int=25, ax: object=None, histo_ax: object=None) -> float:
         # check the uniformity of the ROI
@@ -653,7 +717,7 @@ class Channel:
             self.set_frame_rate(30.0) # set frame rate back to 30 fps
         return image
 
-    def show_image(self, img_arr, title: str='', ax: object=None, histo_ax: object=None):
+    def show_image(self, img_arr, title: str='', ax: object=None, histo_ax: object=None, window: str='roi_centred', draw_roi: bool=True):
         # if the image is 16 bit, convert to 8 bit for display
         if ax is None:
             fig, ax = plt.subplots(figsize=(5.8, 4.1))
@@ -662,14 +726,46 @@ class Channel:
             ax.set_title(f"{self.camera_props['number']}_{int(self.camera_props['cwl'])} Exposure: {self.get_exposure_value():.4f} s")
         else:
             ax.set_title(title)
-        disp = ax.imshow(img_arr, origin='upper')
-        im_ratio = img_arr.shape[0] / img_arr.shape[1]
+
+        # default to show image as ROI with 2x size window for context
+        if window == "roi":
+            win_y = self.camera_props['roiy']
+            win_x = self.camera_props['roix']
+            win_h = self.camera_props['roih']
+            win_w = self.camera_props['roiw']
+        elif window == "roi_centred":
+            win_y = self.camera_props['roiy'] - self.camera_props['roih']//2
+            win_y = np.clip(win_y, 0, self.height-self.camera_props['roih'])
+            win_x = self.camera_props['roix'] - self.camera_props['roiw']//2
+            win_x = np.clip(win_x, 0, self.width-self.camera_props['roiw'])
+            win_h = self.camera_props['roih']*2
+            win_w = self.camera_props['roiw']*2
+        elif window == "full":
+            win_y = 0
+            win_x = 0
+            win_h = self.height
+            win_w = self.width
+        else:
+            win_y = 0
+            win_x = 0
+            win_h = self.height
+            win_w = self.width
+
+        win_img = img_arr[win_y:win_y+win_h, win_x:win_x+win_w]
+        extent = [win_x, win_x+win_w, win_y+win_h, win_y] # coordinates of (left, right, bottom, top)       
+
+        disp = ax.imshow(win_img, origin='upper', extent=extent)
+        im_ratio = win_img.shape[0] / win_img.shape[1]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio, label='DN')
         # plt.show()
+        # draw window/ROI
+        if draw_roi:
+            rect = patches.Rectangle((self.camera_props['roix'], self.camera_props['roiy']), self.camera_props['roiw'], self.camera_props['roih'], linewidth=1, edgecolor='r', facecolor='none')        
+            ax.add_patch(rect)   
 
         # add histogram
         if histo_ax is not None:
-            counts, bins = np.histogram(img_arr[np.nonzero(np.isfinite(img_arr))], bins=128)
+            counts, bins = np.histogram(win_img[np.nonzero(np.isfinite(win_img))], bins=128)
             histo_ax.hist(bins[:-1], bins, weights=counts,
                         label=f"{self.camera_props['number']}_{int(self.camera_props['cwl'])}",
                         log=True, fill=False, stacked=True, histtype='step')
@@ -871,22 +967,50 @@ def find_camera_rois(cameras: List[Channel], roi_size: int=128):
 
     # export_camera_config(cameras)
 
-def set_camera_rois(cameras: List[Channel], roi_size: int=None):
+def set_camera_rois(cameras: Union[List[Channel], Dict[Channel, np.array]], 
+                    roi_size: Union[int, Tuple[int,int]]=None,
+                    roi_dict: Dict[Channel, Tuple[int,int,int,int]]=None,
+                    cross_hair_is_centre: bool=False) -> Dict[Channel, Tuple[int,int,int,int]]:
     """Manually set the ROI for each connected camera, and update the camera 
     properties
 
-    :param cameras: List[Channel] of connected cameras, under serial number name
-    :type cameras: List[Channel]
+    :param cameras: List[Channel] of connected cameras, under serial number name,
+        or Dict[Channel, np.array] linking connected cameras to last image captured.
+    :type cameras: Union[List[Channel], Dict[Channel, np.array]]
+    :param roi_size: Size of region of interest, defaults to 128 pixels
+    :type  Union[int, Tuple[int,int]], optional
+    :param roi_dict: Dictionary of ROI parameters, defaults to None
+    :type roi_dict: Dict[Channel, Tuple[int,int,int,int]], optional
+    :param cross_hair_is_centre: If true, the cross hair is the centre of the ROI
+    :type cross_hair_is_centre: bool, optional
     """
-    for camera in cameras:
+    if isinstance(cameras, Dict):
+        camera_list = list(cameras.keys())
+    else:
+        camera_list = cameras
+
+    new_roi_dict = {}
+    for camera in camera_list:
         cam_num = camera.number
+        if isinstance(cameras, Dict):
+            last_img = cameras[camera]
+        else:
+            last_img = None
+        if roi_dict is not None:
+            roi_params = roi_dict[camera]
+        else:
+            roi_params = None
         print('-----------------------------------')
         print(f'Device {cam_num} ({camera.name})')
         print('-----------------------------------')
-        camera.set_roi_manually(roi_size=roi_size)
+        new_roi = camera.set_roi_manually(image=last_img, 
+                                roi_size=roi_size,
+                                roi_params=roi_params,
+                                cross_hair_is_centre=cross_hair_is_centre)
         print('-----------------------------------')
-
+        new_roi_dict[camera] = new_roi
     # export_camera_config(cameras)
+    return new_roi_dict
 
 def set_camera_session(cameras: List[Channel], session: str='test_session'):
     """Set the session name for each camera.
@@ -995,7 +1119,7 @@ def get_channel_exposures(cameras: List[Channel]) -> Dict:
 def capture_channel_images(cameras: List[Channel], exposures: Union[float, Dict]=None, 
                            session: str='test_session', scene: str='test_scene',
                            img_type: str='img', repeats: int=1, roi=False,
-                           show_img: bool=False, save_img: bool=False, ax: object=None) -> None:
+                           show_img: Union[bool, str]=False, save_img: bool=False, ax: object=None) -> None:
     """Capture a sequence of images from each camera.
 
     :param cameras: List[Channel] of connected camera objects
@@ -1016,6 +1140,7 @@ def capture_channel_images(cameras: List[Channel], exposures: Union[float, Dict]
     :type save_img: bool, optional
     """
     # TODO handle grid plot in here rather than in outside scripts
+    last_imgs = {}
     for camera in cameras:
         cam_num = camera.number
         print('-----------------------------------')
@@ -1041,12 +1166,14 @@ def capture_channel_images(cameras: List[Channel], exposures: Union[float, Dict]
                 else:
                     this_ax = None
                     histo_ax = None
-                camera.show_image(img, title, ax=this_ax, histo_ax=histo_ax)
+                camera.show_image(img, title, ax=this_ax, histo_ax=histo_ax, window=show_img, draw_roi=True)
             if save_img:
                 camera.save_image(str(i), img_type, img)
         print('-----------------------------------')
+        last_imgs[camera] = img
     record_exposures(cameras)
     export_camera_config(cameras)
+    return last_imgs
 
 def export_camera_config(cameras: List[Channel]):
     """Export the camera properties to a csv file.
