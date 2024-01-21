@@ -1086,7 +1086,7 @@ class LightImage(Image):
 
         return cal_dict
     
-    def align_cali_source(self, source: Image, update_roi: bool=False) -> None:
+    def align_cali_source(self, source: Image, update_roi: bool=False, use_roi_only: bool=False) -> None:
         """Align the given calibration image to the image, by finding
         the source and sample centre points through Gaussian fitting around
         the ROI coordinates. Return the new cali source.
@@ -1101,13 +1101,21 @@ class LightImage(Image):
         target_img = cv2.GaussianBlur(target_img, (5, 5), 0)        
         source_img = cv2.GaussianBlur(source_img, (5, 5), 0)        
 
-        # use window size centred on ROI        
-        source_img = source_img[
-            source.roiy-source.winh//2:source.roiy+source.winh//2, 
-            source.roix-source.winw//2:source.roix+source.winw//2]
-        target_img = target_img[
-            self.roiy-self.winh//2:self.roiy+self.winh//2, 
-            self.roix-self.winw//2:self.roix+self.winw//2]        
+        # use window size centred on ROI    
+        if use_roi_only:
+            source_img = source_img[
+                source.roiy:source.roiy+source.roih, 
+                source.roix:source.roix+source.roiw]
+            target_img = target_img[
+                self.roiy:self.roiy+self.roih, 
+                self.roix:self.roix+self.roiw]        
+        else:    
+            source_img = source_img[
+                source.roiy-source.winh//2:source.roiy+source.winh//2, 
+                source.roix-source.winw//2:source.roix+source.winw//2]
+            target_img = target_img[
+                self.roiy-self.winh//2:self.roiy+self.winh//2, 
+                self.roix-self.winw//2:self.roix+self.winw//2]        
 
         # fit a 2D Gaussian to target_img using the target_img ROI as an initial estimate
         yi, xi = np.mgrid[:self.winh, :self.winw]
@@ -1177,6 +1185,90 @@ class LightImage(Image):
         inner += c * (y - y0)**2
         return amp * np.exp(-inner)
 
+class RectifiedImage(LightImage):
+    """Class for handling Rectified Images, inherits LightImage class."""
+    def __init__(self, source_image: LightImage, rect_map1, rect_map2) -> None:
+        self.scene_dir = source_image.scene_dir # input directory
+        self.products_dir = source_image.products_dir # output directory
+        # TODO check scene directory exists
+        self.scene = source_image.scene
+        self.channel = source_image.channel
+        self.img_type = 'img'
+        self.camera = source_image.camera
+        self.emission_angle = source_image.emission_angle
+        self.azimuth_angle = source_image.azimuth_angle
+        self.phase_angle = source_image.phase_angle
+        self.serial = source_image.serial
+        self.width = source_image.width
+        self.height = source_image.height
+        self.cwl = source_image.cwl
+        self.fwhm = source_image.fwhm
+        self.fnumber = source_image.fnumber
+        self.flength = source_image.flength
+        self.exposure = source_image.exposure
+        self.roix = source_image.roix
+        self.roiy = source_image.roiy
+        self.roiw = source_image.roiw
+        self.roih = source_image.roih
+        self.roi = source_image.roi
+        self.winx = source_image.winx
+        self.winy = source_image.winy
+        self.winw = source_image.winw
+        self.winh = source_image.winh
+        self.polyroi = source_image.polyroi.copy()
+        self.units = source_image.units
+        self.n_imgs = source_image.n_imgs
+        self.img_one = source_image.img_one.copy()
+        self.img_ave = source_image.img_ave.copy()
+        self.img_std = source_image.img_std.copy()
+        self.img_err = source_image.img_err.copy()
+        self.rect_map1 = rect_map1
+        self.rect_map2 = rect_map2
+        self.rectified = False
+
+    def rectify(self) -> None:
+        """Rectify the image using the rectification maps.
+        """        
+        if self.rectified:
+            print('Image already rectified.')
+            return
+                        
+        roi_mask = np.zeros_like(self.img_one)
+        roi_mask[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw] = 1
+
+        # img_one
+        self.img_one = cv2.remap(self.img_one, self.rect_map1, self.rect_map2, cv2.INTER_LINEAR)
+        # img_ave
+        self.img_ave = cv2.remap(self.img_ave*roi_mask, self.rect_map1, self.rect_map2, cv2.INTER_LINEAR)
+        # img_std
+        self.img_std = cv2.remap(self.img_std, self.rect_map1, self.rect_map2, cv2.INTER_LINEAR)
+        # img_err
+        self.img_err = cv2.remap(self.img_err, self.rect_map1, self.rect_map2, cv2.INTER_LINEAR)        
+
+        # polyroi
+        if self.polyroi is not None:
+            self.polyroi = cv2.remap(self.polyroi.astype(np.uint8), self.rect_map1, self.rect_map2, cv2.INTER_LINEAR).astype(bool)
+
+        # ROI square rectification
+        self.rectify_roi()
+
+        self.rectified = True
+
+    def rectify_roi(self) -> None:
+        
+        roi_mask = np.zeros_like(self.img_one)
+        roi_mask[self.roiy:self.roiy+self.roih, self.roix:self.roix+self.roiw] = 1
+        # rectify the mask
+        roi_mask = cv2.remap(roi_mask, self.rect_map1, self.rect_map2, cv2.INTER_LINEAR).astype(bool)
+        # get the bounding box on the mask
+        y, x = np.where(roi_mask)
+        # find the centre of the bounding box
+        y0 = int(np.round(np.mean(y)))
+        x0 = int(np.round(np.mean(x)))
+        # redraw the roi around the centre of the bounding box
+        self.roiy = y0 - self.roih//2
+        self.roix = x0 - self.roiw//2
+
 class CalibrationImage(Image):
     """Class for handling Calibration Images, inherits Image class."""
     def __init__(self, source_image: LightImage) -> None:
@@ -1235,7 +1327,7 @@ class CalibrationImage(Image):
         band = np.where((data['wavelength'] > lo) & (data['wavelength'] < hi))
         # set the reference reflectance and error
         self.reference_reflectance = np.mean(data['reflectance'][band])
-        self.reference_reflectance_err = np.mean(data['uncertainty'][band]) / np.sqrt(len(band))
+        self.reference_reflectance_err = np.std(data['reflectance'][band]) / np.sqrt(len(data['reflectance'][band]))
 
     def mask_target(self, clip: float=0.10):
         """Mask the calibration target in the image."""
@@ -2181,62 +2273,41 @@ class StereoPair():
                 self.src_on_left = True
             else:
                 self.src_on_left = False
-        
-        self.src_map1, self.src_map2 = cv2.initUndistortRectifyMap(
+                
+        src_map1, src_map2 = cv2.initUndistortRectifyMap(
             self.src.new_mtx, self.src.dist, self.src_r, self.src_p, 
             (self.src.width, self.src.height), cv2.CV_32FC1)
         
-        self.dst_map1, self.dst_map2 = cv2.initUndistortRectifyMap(
+        src_rect = RectifiedImage(self.src, src_map1, src_map2)
+        if self.src.camera != self.dst.camera:
+            src_rect.rectify()
+
+        dst_map1, dst_map2 = cv2.initUndistortRectifyMap(
             self.dst.new_mtx, self.dst.dist, self.dst_r, self.dst_p, 
             (self.dst.width, self.dst.height), cv2.CV_32FC1)
         
-        src_img = self.src.img_ave.copy() # np.clip(np.floor(self.src.img_ave/16),0,255).astype(np.uint8)        
-        dst_img = self.dst.img_ave.copy() # np.clip(np.floor(self.dst.img_ave/16),0,255).astype(np.uint8)        
-        
-        if polyroi:
-            # apply the poly roi mask
-            if self.src.polyroi is not None:                
-                src_img = src_img * self.src.polyroi
-            else:
-                print('Warning - no PolyROI defined for source image')
-            # if self.dst.polyroi is not None:
-            #     dst_img = dst_img * self.dst.polyroi
-            # else:
-            #     print('Warning - no PolyROI defined for destination image')
-
-        # set all pixels outside the roi to 0
-        if roi:
-            src_img[:, :self.src.roix] = 0
-            src_img[:,self.src.roix+self.src.roiw:] = 0
-            src_img[:self.src.roiy,:] = 0
-            src_img[self.src.roiy+self.src.roih:,:] = 0
-
-            dst_img[:,:self.dst.roix] = 0
-            dst_img[:,self.dst.roix+self.dst.roiw:] = 0
-            dst_img[:self.dst.roiy,:] = 0
-            dst_img[self.dst.roiy+self.dst.roih:,:] = 0
-        
-        src_img = cv2.remap(src_img, self.src_map1, self.src_map2, cv2.INTER_LINEAR)
-        dst_img = cv2.remap(dst_img, self.dst_map1, self.dst_map2, cv2.INTER_LINEAR)
-                 
-        self.src_rect = src_img
-        self.dst_rect = dst_img
+        dst_rect = RectifiedImage(self.dst, dst_map1, dst_map2)
+        if self.src.camera != self.dst.camera:
+            dst_rect.rectify()
 
         title = f'{np.array2string(self.tvec, precision=2)} {self.dst.camera}: {self.dst.cwl} nm'
-        
+
         if roi:
-            # find new ROIs for rectified images
-            # should probably really have a new rectified image class...
-            self.src_rect_roi = self.find_rect_roi(self.src_rect)     
-            self.dst_rect_roi = self.find_rect_roi(self.dst_rect)
-            src_img = src_img[self.src_rect_roi['y']:self.src_rect_roi['y']+self.src_rect_roi['h'], self.src_rect_roi['x']:self.src_rect_roi['x']+self.src_rect_roi['w']]
-            dst_img = dst_img[self.dst_rect_roi['y']:self.dst_rect_roi['y']+self.dst_rect_roi['h'], self.dst_rect_roi['x']:self.dst_rect_roi['x']+self.dst_rect_roi['w']]
+            _, src_img, _, _ = src_rect.roi_image()
+            _, dst_img, _, _ = dst_rect.roi_image()
+        else:
+            src_img = src_rect.img_ave
+            dst_img = dst_rect.img_ave
 
         if self.dst_elines is not None:
             self.draw_epilines('dst')
 
         if self.src.camera == self.dst.camera:
-            ax.imshow(self.src.img_ave, origin='upper')
+            if roi:
+                src_img_orig = self.src.roi_image()[1]
+            else:
+                src_img_orig = self.src.img_ave
+            ax.imshow(src_img_orig, origin='upper')
             ax.set_title(title)
         else:
             ax.imshow(src_img, origin='upper', cmap='Reds')
@@ -2865,7 +2936,8 @@ def align_scenes(
         target_scene: Dict[str, LightImage], 
         source_scene: Dict[str, LightImage], 
         display: bool=True,
-        update_rois: bool=False) -> Dict:
+        update_rois: bool=False,
+        use_roi_only: bool=False) -> Dict:
     """Align the source scene to the target scene.
 
     :param target_scene: Dictionary of target scene images
@@ -2889,7 +2961,7 @@ def align_scenes(
         target = target_scene[channel]
         source = source_scene[channel]
         print(f'Aligning {target.scene}: {target.camera} ({int(target.cwl)} nm) to {source.scene}: {source.camera} ({int(source.cwl)} nm)')
-        align = target.align_cali_source(source, update_roi=update_rois)        
+        align = target.align_cali_source(source, update_roi=update_rois, use_roi_only=use_roi_only)        
         aligned_scene[channel] = align
     
     if display:
@@ -3326,7 +3398,7 @@ def analyse_roi_reflectance(
         fig.savefig(filepath, dpi=300)
 
         # show the ROI as the full window
-        fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged', window='roi', draw_roi=True)        
+        fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged', window='roi', draw_roi=True, polyroi=polyroi)        
 
     fig = plt.figure()
     plt.grid(visible=True)
