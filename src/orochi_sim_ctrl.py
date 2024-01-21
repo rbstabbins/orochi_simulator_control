@@ -838,7 +838,7 @@ def connect_cameras(ic, camera_config: Dict=None) -> List:
 
     return cameras
 
-def configure_cameras(cameras: List, **kwargs) -> None:
+def configure_cameras(cameras: List[Channel], **kwargs) -> None:
     """Apply default settings to all cameras.
 
     :param cameras: list of camera objects
@@ -853,7 +853,7 @@ def configure_cameras(cameras: List, **kwargs) -> None:
         camera.get_current_state()
         print('-----------------------------------')
 
-def find_camera_rois(cameras: List, roi_size: int=128):
+def find_camera_rois(cameras: List[Channel], roi_size: int=128):
     """Find the ROI for each connected camera, and update the camera properties
 
     :param cameras: List of connected cameras, under serial number name
@@ -871,12 +871,12 @@ def find_camera_rois(cameras: List, roi_size: int=128):
 
     # export_camera_config(cameras)
 
-def set_camera_rois(cameras: List, roi_size: int=None):
+def set_camera_rois(cameras: List[Channel], roi_size: int=None):
     """Manually set the ROI for each connected camera, and update the camera 
     properties
 
-    :param cameras: List of connected cameras, under serial number name
-    :type cameras: List
+    :param cameras: List[Channel] of connected cameras, under serial number name
+    :type cameras: List[Channel]
     """
     for camera in cameras:
         cam_num = camera.number
@@ -888,11 +888,11 @@ def set_camera_rois(cameras: List, roi_size: int=None):
 
     # export_camera_config(cameras)
 
-def set_camera_session(cameras: List, session: str='test_session'):
+def set_camera_session(cameras: List[Channel], session: str='test_session'):
     """Set the session name for each camera.
 
-    :param cameras: List of connected cameras, under serial number name
-    :type cameras: List
+    :param cameras: List[Channel] of connected cameras, under serial number name
+    :type cameras: List[Channel]
     :param session: Description of image subject, defaults to 'test'
     :type session: str, optional
     """
@@ -905,11 +905,11 @@ def set_camera_session(cameras: List, session: str='test_session'):
         print(f'Session set to {session}')
         print('-----------------------------------')
 
-def set_camera_scene(cameras: List, scene: str='test_scene'):
+def set_camera_scene(cameras: List[Channel], scene: str='test_scene'):
     """Set the scene name for each camera.
 
-    :param cameras: List of connected cameras, under serial number name
-    :type cameras: List
+    :param cameras: List[Channel] of connected cameras, under serial number name
+    :type cameras: List[Channel]
     :param scene: Description of image subject, defaults to 'test'
     :type scene: str, optional
     """
@@ -922,12 +922,12 @@ def set_camera_scene(cameras: List, scene: str='test_scene'):
         print(f'Scene set to {scene}')
         print('-----------------------------------')
 
-def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
+def find_channel_exposures(cameras: List[Channel], init_t_exp=0.03, target=0.8, n_hot=5,
                       tol=5, limit=16, roi=True) -> Dict:
     """Find the optimal exposure time for each camera.
 
-    :param cameras: list of camera objects
-    :type cameras: List
+    :param cameras: List[Channel] of camera objects
+    :type cameras: List[Channel]
     """
     exposures = {}
 
@@ -945,11 +945,11 @@ def find_channel_exposures(cameras: List, init_t_exp=0.03, target=0.8, n_hot=5,
         print('-----------------------------------')
     return exposures
 
-def set_channel_exposures(cameras: List, exposures: Union[float, Dict, str]) -> None:
+def set_channel_exposures(cameras: List[Channel], exposures: Union[float, Dict, str]) -> None:
     """Set the exposure time for each camera.
 
-    :param cameras: list of camera objects
-    :type cameras: List
+    :param cameras: List[Channel] of camera objects
+    :type cameras: List[Channel]
     :param exposures: exposure time for each camera
     :type exposures: Union[double, Dict]
     """
@@ -971,11 +971,11 @@ def set_channel_exposures(cameras: List, exposures: Union[float, Dict, str]) -> 
         print(f'Exposure set to {expo} s')
         print('-----------------------------------')
 
-def get_channel_exposures(cameras: List) -> Dict:
+def get_channel_exposures(cameras: List[Channel]) -> Dict:
     """Get the exposure time for each camera.
 
-    :param cameras: list of camera objects
-    :type cameras: List
+    :param cameras: List[Channel] of camera objects
+    :type cameras: List[Channel]
     :param exposures: exposure time for each camera
     :type exposures: Union[double, Dict]
     """
@@ -992,14 +992,14 @@ def get_channel_exposures(cameras: List) -> Dict:
     return exposures
 
 # Image Capture and Information Export
-def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None, 
+def capture_channel_images(cameras: List[Channel], exposures: Union[float, Dict]=None, 
                            session: str='test_session', scene: str='test_scene',
                            img_type: str='img', repeats: int=1, roi=False,
                            show_img: bool=False, save_img: bool=False, ax: object=None) -> None:
     """Capture a sequence of images from each camera.
 
-    :param cameras: List of connected camera objects
-    :type cameras: List
+    :param cameras: List[Channel] of connected camera objects
+    :type cameras: List[Channel]
     :param exposures: exposure time for each camera
     :type exposures: Dict
     :param target: Description of image subject, defaults to 'test'
@@ -1048,11 +1048,11 @@ def capture_channel_images(cameras: List, exposures: Union[float, Dict]=None,
     record_exposures(cameras)
     export_camera_config(cameras)
 
-def export_camera_config(cameras: List):
+def export_camera_config(cameras: List[Channel]):
     """Export the camera properties to a csv file.
 
     :param cameras: Connected cameras
-    :type cameras: List
+    :type cameras: List[Channel]
     """
     cam_info = []
     for camera in cameras:
@@ -1068,7 +1068,7 @@ def export_camera_config(cameras: List):
     camera_file = Path(subject_dir, 'camera_config.csv')
     cam_df.to_csv(camera_file)
 
-def get_camera_info(cameras: List):
+def get_camera_info(cameras: List[Channel]):
     cam_info = []
     for camera in cameras:
         cam_props = list(camera.camera_props.values())
@@ -1096,7 +1096,7 @@ def record_exposures(cameras, exposures=None) -> None:
             f.write(f'{channel}, {t_exp} \n')
 
 # Camera Disconnection
-def disconnect_cameras(cameras: List) -> None:
+def disconnect_cameras(cameras: List[Channel]) -> None:
     for camera in cameras:
         camera.ic.IC_ReleaseGrabber(camera.grabber)
         print(f'Device {camera.number} ({camera.name}) disconnected')
@@ -1223,11 +1223,11 @@ def load_exposures(cameras, subject) -> Dict:
             exposures[cam_name] = float(f.read())
     return exposures
 
-def check_channel_roi_uniformity(cameras: List, n: int=25, ax: object=None) -> None:
+def check_channel_roi_uniformity(cameras: List[Channel], n: int=25, ax: object=None) -> None:
     """Check the uniformity of the ROI for each camera.
 
-    :param cameras: List of connected camera objects
-    :type cameras: List
+    :param cameras: List[Channel] of connected camera objects
+    :type cameras: List[Channel]
     """
     for camera in cameras:
         cam_num = camera.number
@@ -1243,12 +1243,12 @@ def check_channel_roi_uniformity(cameras: List, n: int=25, ax: object=None) -> N
         camera.check_roi_uniformity(n=n, ax=this_ax, histo_ax=histo_ax)
         print('-----------------------------------')
 
-def find_camera_bands(connected_cameras: List, cameras: Dict) -> Dict:
+def find_camera_bands(connected_cameras: List[Channel], cameras: Dict) -> Dict:
     """Find the band number for each connected camera, and update the camera
     properties dictionary.
 
-    :param connected_cameras: List of connected cameras, under serial number name
-    :type cameras: List
+    :param connected_cameras: List[Channel] of connected cameras, under serial number name
+    :type cameras: List[Channel]
     :param cameras: Camera properties dictionary
     :type cameras: Dict
     :return: Dictionary of camera properties, with serial number attached
