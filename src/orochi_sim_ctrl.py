@@ -16,6 +16,7 @@ import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter
+import scipy.optimize as opt
 import tifffile as tiff
 import tisgrabber as tis
 
@@ -514,6 +515,37 @@ class Channel:
                 searching = False
                 return t_exp
 
+    def tune_roi(self) -> None:
+        """Tune the Region of Interest by fitting a 2D Gaussian to the image.
+        """
+        #self.find_exposure(roi=False, target=0.95, n_hot=5000, tol=50, init_t_exp=1.0/500) # aim for an overexposed image, i.e. as if thresholding has been applied.
+        # self.set_exposure(20E-5)
+        img = self.image_capture(roi=False)   
+
+        crop_img = img[self.camera_props['roiy']-self.camera_props['roih']//2:self.camera_props['roiy']+2*self.camera_props['roih'], self.camera_props['roix']-self.camera_props['roiw']//2:self.camera_props['roix']+2*self.camera_props['roiw']]
+
+        yi, xi = np.mgrid[:crop_img.shape[0], :crop_img.shape[1]]
+        xyi = np.vstack([xi.ravel(), yi.ravel()])
+        guess = [np.nanmax(crop_img), crop_img.shape[1]//2, crop_img.shape[0]//2, 0.001, 0.001, 0.001]
+        pred_params, uncert_cov = opt.curve_fit(self.gauss2d, xyi, crop_img.ravel(), p0=guess)  
+
+        # update the roi to the new centre
+        x0, y0 = pred_params[1], pred_params[2]
+        x0 = int(np.round(x0))
+        y0 = int(np.round(y0))
+        self.camera_props['roiy'] = y0 + self.camera_props['roiy']-self.camera_props['roih']
+        self.camera_props['roix'] = x0 + self.camera_props['roix']-self.camera_props['roiw'] 
+
+        return [self.camera_props['roiy'], self.camera_props['roix'], self.camera_props['roih'], self.camera_props['roiw']]
+
+    @staticmethod
+    def gauss2d(xy, amp, x0, y0, a, b, c):
+        x, y = xy
+        inner = a * (x - x0)**2 
+        inner += 2 * b * (x - x0)**2 * (y - y0)**2
+        inner += c * (y - y0)**2
+        return amp * np.exp(-inner)
+
     def find_roi(self, roi_size: int=128) -> None:
 
         self.find_exposure(roi=False, target=0.95, n_hot=5000, tol=50, init_t_exp=1.0/500) # aim for an overexposed image, i.e. as if thresholding has been applied.
@@ -681,11 +713,11 @@ class Channel:
         """
         # self.get_current_state()
         exposure = self.get_exposure_value() # ensure that recorded exposure is correct
+        framerate = self.ic.IC_GetFrameRate(self.grabber)
         print(f'Imaging with Exposure: {exposure:0.6f} s')
-        if exposure > 0.45:
-            self.set_frame_rate(1.0) # set frame rate to 1 fps if exposure is too long
-        elif exposure < 0.02:
-            print()
+        print(f'Imaging with Frame Rate: {framerate} FPS')
+        if exposure < 0.02:
+            print('WARNING: Exposure less than 0.02 s may scale unpredictably with exposure time')
         self.ic.IC_StartLive(self.grabber,0)
         wait_time = int(np.max([5.0, 2*exposure])*1E3) # time in ms to wait to receive frame
         if self.ic.IC_SnapImage(self.grabber, wait_time) == tis.IC_SUCCESS:
@@ -729,8 +761,6 @@ class Channel:
                 h = self.camera_props['roih']
                 image = image[x:x+w,y:y+h]
         self.ic.IC_StopLive(self.grabber)
-        if exposure > 0.45:
-            self.set_frame_rate(30.0) # set frame rate back to 30 fps
         return image
 
     def show_image(self, img_arr, title: str='', ax: object=None, histo_ax: object=None, window: str='roi_centred', draw_roi: bool=True):
@@ -777,6 +807,7 @@ class Channel:
         extent = [win_x, win_x+win_w, win_y+win_h, win_y] # coordinates of (left, right, bottom, top)       
 
         disp = ax.imshow(win_img, origin='upper', extent=extent)
+
         im_ratio = win_img.shape[0] / win_img.shape[1]
         cbar = plt.colorbar(disp, ax=ax, fraction=0.047*im_ratio, label='DN')
         # plt.show()
@@ -877,7 +908,10 @@ def start_ic() -> object:
 
     return ic
 
-def load_camera_config(session_path: str=None) -> Dict:
+def load_camera_config(session_path: str=None,
+                       fnumber: float=None,
+                       cwl: float=None,
+                       fwhm: float=None) -> Dict:
     """Load the camera configuration file
 
     :return: dictionary of cameras and settings
@@ -901,6 +935,17 @@ def load_camera_config(session_path: str=None) -> Dict:
         'roiy': int,
         'roiw': int,
         'roih': int}).T.to_dict()
+    
+    if fnumber is not None:
+        for camera in cameras:
+            cameras[camera]['fnumber'] = fnumber
+    if cwl is not None:
+        for camera in cameras:
+            cameras[camera]['cwl'] = cwl
+    if fwhm is not None:
+        for camera in cameras:
+            cameras[camera]['fwhm'] = fwhm
+    
     return cameras
 
 def get_connected_cameras(ic) -> List:
@@ -1034,6 +1079,25 @@ def set_camera_rois(cameras: Union[List[Channel], Dict[Channel, np.array]],
                                 cross_hair_is_centre=cross_hair_is_centre)
         print('-----------------------------------')
         new_roi_dict[camera] = new_roi
+    # export_camera_config(cameras)
+    return new_roi_dict
+
+def tune_channel_rois(cameras: List[Channel]) -> Dict[Channel, Tuple[int,int,int,int]]:
+    """Tune the ROI for each connected camera, and update the camera properties
+
+    :param cameras: List of connected cameras, under serial number name
+    :type cameras: List
+    """
+    new_roi_dict = {}
+    for camera in cameras:
+        cam_num = camera.number
+        print('-----------------------------------')
+        print(f'Device {cam_num} ({camera.name})')
+        print('-----------------------------------')
+        new_roi_params = camera.tune_roi()
+        new_roi_dict[camera] = new_roi_params
+        print('-----------------------------------')
+
     # export_camera_config(cameras)
     return new_roi_dict
 
@@ -1364,17 +1428,14 @@ def prepare_dark_acquisition(ic):
     msg = 'Check Lens Caps are in place'
     ic.IC_MsgBox(tis.T(msg), tis.T(title))
 
-def load_exposures(cameras, subject) -> Dict:
-    subject_dir = Path('..', 'data', subject)
-    channels = subject_dir.glob('*')
+def load_exposures(cameras: List[Channel], session, scene) -> Dict:
     exposures = {}
-    cam_lut = {str(c.number): c.name for c in cameras}
-    for channel in channels:
-        filename = Path(channel, 'exposure_seconds.txt')
-        cam_num = channel.name.split('_')[0]
-        cam_name = cam_lut[cam_num]
-        with open(filename, 'r') as f:
-            exposures[cam_name] = float(f.read())
+    subject_dir = Path('..', '..', 'data', 'sessions', session, scene)
+    filename = Path(subject_dir, 'exposure_seconds.txt')
+    exposures_in = pd.read_csv(filename, index_col=0, header=None, dtype={0: str, 1: np.float64})
+    for camera in cameras:
+        cam_label = str(camera.number)+'_'+str(int(camera.camera_props['cwl']))
+        exposures[camera.name] = exposures_in.loc[cam_label].values[0]
     return exposures
 
 def check_channel_roi_uniformity(cameras: List[Channel], n: int=25, ax: object=None) -> None:
