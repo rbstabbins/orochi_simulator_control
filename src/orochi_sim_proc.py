@@ -526,15 +526,18 @@ class Image:
         hdu.header['units'] = self.units
         hdu.writeto(img_err_file, overwrite=True)
 
-    def image_load(self, n_imgs: int=None, mode: str='mean', stack: np.ndarray=None) -> None:
+    def image_load(self, n_imgs: int=None, filename: str=None, mode: str='mean', stack: np.ndarray=None) -> None:
         """Load images from the scene directory for the given type,
         populate properties, and compute averages and standard deviation.
         """
 
-        # get list of images of given type in the scene directory
-        files = list(self.scene_dir.glob('*'+self.img_type+'.tif'))
-        if files == []:
-            raise FileNotFoundError(f'Error: no {self.img_type} images found in {self.scene_dir}')
+        if filename is None:
+            # get list of images of given type in the scene directory
+            files = list(self.scene_dir.glob('*'+self.img_type+'.tif'))
+            if files == []:
+                raise FileNotFoundError(f'Error: no {self.img_type} images found in {self.scene_dir}')
+        else:
+            files = [Path(self.scene_dir, filename).resolve()]
         
         # set n_imgs
         if n_imgs == None:
@@ -3683,7 +3686,7 @@ def process_flat_fields(flatfield_scene: Dict[str, Image], display: bool=True) -
 
 """Potentially Redundant Functions"""
 
-def load_dtc_frames(subject: str, channel: str) -> pd.DataFrame:
+def load_dtc_frames(scene_path: Path, channel: str) -> pd.DataFrame:
     # initiliase the variables
     mean = []
     std_t = []
@@ -3691,16 +3694,16 @@ def load_dtc_frames(subject: str, channel: str) -> pd.DataFrame:
     t_exp = []
     n_pix = []
     # find the frames for the given channel
-    frame_1s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_1_calibration.tif')))
-    frame_2s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_2_calibration.tif')))
+    frame_1s = sorted(list(Path(scene_path, channel).glob('[!.]*_1_calibration.tif')))
+    frame_2s = sorted(list(Path(scene_path, channel).glob('[!.]*_2_calibration.tif')))
     # check the numbers in each list are equal
     # for each exposure, load image 1, 2 and the dark mean image
     n_steps = len(frame_1s)
     for i in range(n_steps):
-        img_1 = Image(subject, channel, frame_1s[i].stem)
-        img_1.image_load()
-        img_2 = Image(subject, channel, frame_2s[i].stem)
-        img_2.image_load()
+        img_1 = Image(scene_path, None, channel, img_type='drk')
+        img_1.image_load(filename=frame_1s[i].name)
+        img_2 = Image(scene_path, None, channel, img_type='drk')
+        img_2.image_load(filename=frame_2s[i].name)
         if img_1.img_ave.mean() == 1:
             continue
         img_ave = np.mean([img_1.img_ave, img_2.img_ave], axis=0)
@@ -3736,7 +3739,7 @@ def load_dtc_frames(subject: str, channel: str) -> pd.DataFrame:
 
     return dtc_data, read_noise, dark_current, bias
 
-def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.DataFrame:
+def load_ptc_frames(light_path: Path, channel: str, read_noise: float=None) -> pd.DataFrame:
     # initiliase the variables
     mean = []
     std_t = []
@@ -3746,22 +3749,22 @@ def load_ptc_frames(subject: str, channel: str, read_noise: float=None) -> pd.Da
     t_exp = []
     n_pix = []
     # find the frames for the given channel
-    frame_1s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_1_calibration.tif')))
-    frame_2s = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_2_calibration.tif')))
-    frame_ds = sorted(list(Path('..', 'data', subject, channel).glob('[!.]*_d_drk.tif')))
+    frame_1s = sorted(list(Path(light_path, channel).glob('[!.]*_1_calibration.tif')))
+    frame_2s = sorted(list(Path(light_path, channel).glob('[!.]*_2_calibration.tif')))
+    frame_ds = sorted(list(Path(light_path, channel).glob('[!.]*_d_drk.tif')))
     # check the numbers in each list are equal
     # for each exposure, load image 1, 2 and the dark mean image
     n_steps = len(frame_1s)
     for i in range(n_steps):
-        img_1 = Image(subject, channel, frame_1s[i].stem)
-        img_1.image_load()
-        img_2 = Image(subject, channel, frame_2s[i].stem)
-        img_2.image_load()
+        img_1 = Image(light_path, None, channel, img_type='img')
+        img_1.image_load(filename=frame_1s[i].name)
+        img_2 = Image(light_path, None, channel, img_type='img')
+        img_2.image_load(filename=frame_2s[i].name)
         try:
-            drk  = Image(subject, channel, frame_ds[i].stem)
+            drk  = Image(light_path, None, channel, img_type='img')
         except:
             print('bad dark')
-        drk.image_load()
+        drk.image_load(filename=frame_ds[i].name)
         # process the images, store the results
         if img_1.img_ave.mean() == 1:
             continue
