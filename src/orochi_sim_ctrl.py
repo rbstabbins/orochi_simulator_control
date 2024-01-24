@@ -1151,8 +1151,10 @@ def find_channel_exposures(cameras: List[Channel], init_t_exp=0.03, target=0.8, 
         print(f'Device {cam_num}')
         print('-----------------------------------')
         if init_t_exp == 'CURRENT':
-            init_t_exp = camera.get_exposure_value()
-        exposure = camera.find_exposure(init_t_exp, target, n_hot,
+            this_init_t_exp = camera.get_exposure_value()
+        else:
+            this_init_t_exp = init_t_exp
+        exposure = camera.find_exposure(this_init_t_exp, target, n_hot,
                       tol, limit, roi)
         exposures[camera.name] = exposure
         print('-----------------------------------')
