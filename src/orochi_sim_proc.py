@@ -572,10 +572,6 @@ class Image:
             self.flength = self.check_property(self.flength, meta['f-length'])
             self.exposure = self.check_property(self.exposure, meta['exposure'])
             # try:
-            #     self.roiy = self.check_property(self.roiy, meta['roiy'])
-            #     self.roix = self.check_property(self.roix, meta['roix'])
-            #     self.roih = self.check_property(self.roih, meta['roih'])
-            #     self.roiw = self.check_property(self.roiw, meta['roiw'])
             # except (KeyError, ValueError):
             # read the camera_config file to get the ROI
 
@@ -587,10 +583,14 @@ class Image:
             cam_name = f'DMK 33GX249 {int(self.serial)}'
             cam_props = camera_info[cam_name]
             # currently roiy and roix labels are inverted - so correct on load in here
-            self.roiy = cam_props['roix']
-            self.roix = cam_props['roiy']
-            self.roih = cam_props['roiw']
-            self.roiw = cam_props['roih']
+            self.roiy = self.check_property(self.roiy, meta['roiy'])
+            self.roix = self.check_property(self.roix, meta['roix'])
+            self.roih = self.check_property(self.roih, meta['roih'])
+            self.roiw = self.check_property(self.roiw, meta['roiw'])
+            # self.roiy = cam_props['roix']
+            # self.roix = cam_props['roiy']
+            # self.roih = cam_props['roiw']
+            # self.roiw = cam_props['roih']
             self.winy = WINDOWS[self.camera][0]
             self.winx = WINDOWS[self.camera][1]
             self.winh = WINDOWS[self.camera][2]
@@ -3739,7 +3739,7 @@ def load_dtc_frames(scene_path: Path, channel: str) -> pd.DataFrame:
 
     return dtc_data, read_noise, dark_current, bias
 
-def load_ptc_frames(light_path: Path, channel: str, read_noise: float=None) -> pd.DataFrame:
+def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_noise: float=None) -> pd.DataFrame:
     # initiliase the variables
     mean = []
     std_t = []
@@ -3751,7 +3751,9 @@ def load_ptc_frames(light_path: Path, channel: str, read_noise: float=None) -> p
     # find the frames for the given channel
     frame_1s = sorted(list(Path(light_path, channel).glob('[!.]*_1_calibration.tif')))
     frame_2s = sorted(list(Path(light_path, channel).glob('[!.]*_2_calibration.tif')))
-    frame_ds = sorted(list(Path(light_path, channel).glob('[!.]*_d_drk.tif')))
+    if dark_path is None:
+        dark_path = light_path
+    frame_ds = sorted(list(Path(dark_path, channel).glob('[!.]*_d_drk.tif')))
     # check the numbers in each list are equal
     # for each exposure, load image 1, 2 and the dark mean image
     n_steps = len(frame_1s)
@@ -3761,7 +3763,7 @@ def load_ptc_frames(light_path: Path, channel: str, read_noise: float=None) -> p
         img_2 = Image(light_path, None, channel, img_type='img')
         img_2.image_load(filename=frame_2s[i].name)
         try:
-            drk  = Image(light_path, None, channel, img_type='img')
+            drk  = Image(dark_path, None, channel, img_type='img')
         except:
             print('bad dark')
         drk.image_load(filename=frame_ds[i].name)
