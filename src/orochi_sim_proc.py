@@ -583,14 +583,14 @@ class Image:
             cam_name = f'DMK 33GX249 {int(self.serial)}'
             cam_props = camera_info[cam_name]
             # currently roiy and roix labels are inverted - so correct on load in here
-            self.roiy = self.check_property(self.roiy, meta['roiy'])
-            self.roix = self.check_property(self.roix, meta['roix'])
-            self.roih = self.check_property(self.roih, meta['roih'])
-            self.roiw = self.check_property(self.roiw, meta['roiw'])
-            # self.roiy = cam_props['roix']
-            # self.roix = cam_props['roiy']
-            # self.roih = cam_props['roiw']
-            # self.roiw = cam_props['roih']
+            # self.roiy = self.check_property(self.roiy, meta['roiy'])
+            # self.roix = self.check_property(self.roix, meta['roix'])
+            # self.roih = self.check_property(self.roih, meta['roih'])
+            # self.roiw = self.check_property(self.roiw, meta['roiw'])
+            self.roiy = cam_props['roix']
+            self.roix = cam_props['roiy']
+            self.roih = cam_props['roiw']
+            self.roiw = cam_props['roih']
             self.winy = WINDOWS[self.camera][0]
             self.winx = WINDOWS[self.camera][1]
             self.winh = WINDOWS[self.camera][2]
@@ -712,9 +712,9 @@ class Image:
 
         # if not 8 bit convert for display
         if img.dtype != np.uint8:
-            # _, img_ave, _, _ = self.roi_image()
+            _, img_ave, _, _ = self.roi_image()
             # if img_ave.shape == (0,0):
-            img_ave = self.img_ave
+            # img_ave = self.img_ave
             img = np.clip(np.floor(img * 255/np.nanmax(img_ave)), 0, 255).astype(np.uint8)
 
         if roi_params is None:
@@ -940,11 +940,42 @@ class LightImage(Image):
         self.units = 'Above-Bias Signal DN'
         print(f'Subtracting dark frame for: {self.camera} ({int(self.cwl)} nm)')
 
+    def linearity_correction(self, linearity_corr_dir: Path) -> None:
+        """Apply nonlinearity correction to the image
+
+        :param linearity_corr_dir: Path to nonlinearity correction coefficients
+        :type linearity_corr_dir: Path
+        """        
+        # get the linearity correction coefficient
+        nl_0, nl_1, nl_2 = self.load_linearity_corr(linearity_corr_dir)
+
+        # compute the correction amount
+        nl_corr = nl_0 + nl_1*self.img_one + nl_2*self.img_one**2
+
+        self.img_one = self.img_one / (1 + nl_corr/100)
+
+        self.img_ave = self.img_ave / (1 + nl_corr/100)
+
+        # TODO - uncertainty propagation from NL correction
+
+    def load_linearity_corr(self, linearity_corr_dir: Path) -> Tuple[float, float, float]:
+        """Load the linearity correction coefficients from the given directory
+
+        :param linearity_corr_dir: Directory to linearity correction data
+        :type linearity_corr_dir: Path
+        :return: Linearity correction coefficients
+        :rtype: Tuple[float, float, float]
+        """        
+        corr_file = Path(linearity_corr_dir, str(self.camera)+'_linear_corr_coeffs').with_suffix('.csv')
+        corr_coeffs = pd.read_csv(corr_file)
+
+        return corr_coeffs.to_numpy()[0]
+
     def flat_field(self, flat_image_dir: Path) -> None:
         """Apply flat field correction to the image
 
-        :param flat_image: Flat Image object
-        :type flat_image: Image
+        :param flat_image_dir: Flat Field iamge directory
+        :type flat_image_dir: Path
         """      
         # look up the flat-field image in the directory.
         flat_ave, flat_err = self.load_flat_field(flat_image_dir)
@@ -2752,6 +2783,7 @@ class StereoPair():
 def load_scene(
         scene_path: Path, 
         dark_path: Path=None, 
+        lin_corr_path: Path=None,
         flat_path: Path=None,
         product_path: Path=None,
         calibration_path: Path=None,
@@ -2826,9 +2858,14 @@ def load_scene(
             dark_smpl = chnl_scene.estimate_dark_signal()
             chnl_scene.dark_subtract(dark_smpl)
 
+
         # flat fielding
         if flat_path is not None:
             chnl_scene.flat_field(flat_path)
+
+        # linearity correction
+        if isinstance(lin_corr_path, Path):
+            chnl_scene.linearity_correction(lin_corr_path)
             
         scene_imgs[channel] = chnl_scene
 
@@ -3401,7 +3438,8 @@ def analyse_roi_reflectance(
         fig.savefig(filepath, dpi=300)
 
         # show the ROI as the full window
-        fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged', window='roi', draw_roi=True, polyroi=polyroi)        
+        fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged', window='roi', draw_roi=True, polyroi=polyroi) 
+        fig, ax = display_scene(refl_imgs, roi_name, statistic='single-frame-snr', window='roi', draw_roi=True, polyroi=polyroi)        
 
     fig = plt.figure()
     plt.grid(visible=True)
@@ -3505,6 +3543,8 @@ def analyse_roi_reflectance(
         'ro-',
         label=f'Mean of Averaged ROI'        
     )
+
+    # plt.ylim(bottom = 0.0)
 
     plt.xlabel('Wavelength (nm)')
     plt.ylabel('Reflectance')
@@ -3727,7 +3767,7 @@ def load_dtc_frames(scene_path: Path, channel: str) -> pd.DataFrame:
     dtc_data = dtc_data.sort_values(by='exposure')
     # fit read noise
     # fit linear to std_rs**2 vs exposure
-    fit = np.polyfit(dtc_data['exposure'], dtc_data['std_rs']**2, 1, w=1/dtc_data['std_rs']**2)
+    fit = np.polyfit(dtc_data['exposure'], dtc_data['std_rs']**2, 1, w=1/dtc_data['std_rs']**4)
     if fit[-1] < 0:
         fit[-1] = 0.0
     read_noise = np.sqrt(fit[-1])
@@ -3748,25 +3788,53 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     std_rs = []
     t_exp = []
     n_pix = []
-    # find the frames for the given channel
-    frame_1s = sorted(list(Path(light_path, channel).glob('[!.]*_1_calibration.tif')))
-    frame_2s = sorted(list(Path(light_path, channel).glob('[!.]*_2_calibration.tif')))
+
+    # find the frames for the given channel, and sort by exposure
+    frame_1s = list(Path(light_path, channel).glob('[!.]*_1_calibration.tif'))
+
+    # check number of format of file name, and decide where to get exposure from
+    if len(frame_1s[0].name.split('_')) == 5:
+        expo_i = 2
+    elif len(frame_1s[0].name.split('_')) == 4:
+        expo_i = 1
+    else:
+        print('Bad file name format')
+        raise ValueError
+
+    frame_1s_exposures = [float((f.name.split('_')[expo_i])[:-2]) for f in frame_1s]
+    frame_1s = [x for _, x in sorted(zip(frame_1s_exposures, frame_1s))]
+
+    frame_2s = list(Path(light_path, channel).glob('[!.]*_2_calibration.tif'))
+    frame_2s_exposures = [float((f.name.split('_')[expo_i])[:-2]) for f in frame_2s]
+    frame_2s = [x for _, x in sorted(zip(frame_2s_exposures, frame_2s))]
+
     if dark_path is None:
         dark_path = light_path
-    frame_ds = sorted(list(Path(dark_path, channel).glob('[!.]*_d_drk.tif')))
+    frame_ds = list(Path(dark_path, channel).glob('[!.]*_d_drk.tif'))
+    frame_ds_exposures = [float((f.name.split('_')[expo_i])[:-2]) for f in frame_ds]
+    frame_ds = [x for _, x in sorted(zip(frame_ds_exposures, frame_ds))]
+
     # check the numbers in each list are equal
     # for each exposure, load image 1, 2 and the dark mean image
     n_steps = len(frame_1s)
+
     for i in range(n_steps):
-        img_1 = Image(light_path, None, channel, img_type='img')
+        img_1 = LightImage(light_path, None, channel, img_type='img')
         img_1.image_load(filename=frame_1s[i].name)
-        img_2 = Image(light_path, None, channel, img_type='img')
+                                        
+        img_2 = LightImage(light_path, None, channel, img_type='img')
         img_2.image_load(filename=frame_2s[i].name)
         try:
             drk  = Image(dark_path, None, channel, img_type='img')
         except:
             print('bad dark')
         drk.image_load(filename=frame_ds[i].name)
+
+        # check that the dark frame exposure matches the light frame
+        if not np.isclose(img_1.exposure, drk.exposure, rtol=1e-5, atol=1e-5):
+            print(f'Exposure mismatch between light and dark frames for {channel} at {img_1.exposure} and {drk.exposure}')
+            raise ValueError
+
         # process the images, store the results
         if img_1.img_ave.mean() == 1:
             continue
@@ -3782,7 +3850,7 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
         d_mean.append(dark_mean)
         d_dsnu.append(dark_dsnu)
         std_rs.append(img_off_std_rs)
-        t_exp.append(float(img_1.exposure))
+        t_exp.append(img_1.exposure)
         n_pix.append(img_1.width * img_1.height)
     # put results in a dataframe
     pct_data = pd.DataFrame(data={
@@ -3796,12 +3864,20 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     })
     pct_data = pct_data.sort_values(by='exposure')
 
+    # load the flat field frame to get PRNU from
+    flat_path_dir = Path('..','..', 'data', 'calibration', 'oros_09012024', 'flat_fields')
+    flat_ave, flat_err = img_1.load_flat_field(flat_path_dir)
+    # get the PRNU over the ROI
+    prnu = np.std(flat_ave[img_1.roix:img_1.roix+img_1.roiw, img_1.roix:img_1.roix+img_1.roih])/np.mean(flat_ave[img_1.roix:img_1.roix+img_1.roiw, img_1.roix:img_1.roix+img_1.roih])
+    if prnu > 0.01:
+        print(f'PRNU is {prnu} for {channel}')
+
     # set as the mean for the highest valued std_t
-    full_well = pct_data['mean'][pct_data['std_t'] == pct_data['std_t'].max()].mean()
+    sat_cap = pct_data['mean'][pct_data['std_t'] == pct_data['std_t'].max()].mean()
 
     if read_noise is None:
         # get read noise DN
-        lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.7*full_well].max()][0])
+        lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.7*sat_cap].max()][0])
 
         # fit quadratic to std_t vs mean
         # fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_t'][0:lim]**2, 2)
@@ -3828,9 +3904,13 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     # get sensitivity e-/DN
     pct_data['k_adc'] = pct_data['mean'] / pct_data['std_s']**2
 
+
     # get mean sensitivity in linear range - 0.05 - 0.95 x Full Well
-    lin_range = (pct_data['mean'] < full_well*0.95) & (pct_data['mean'] > full_well*0.05)
+    lin_range = (pct_data['mean'] < sat_cap*0.95) & (pct_data['mean'] > sat_cap*0.05)
     k_adc = pct_data['k_adc'][lin_range].mean()
+
+    # get full well capacity DN
+    full_well = 2**12 - 1 # pct_data['mean'].max()
 
     # get linearity
     fit = np.polyfit(pct_data['exposure'][lin_range], pct_data['mean'][lin_range], 1, w=1.0/(pct_data['mean'][lin_range])**2)
@@ -3839,6 +3919,10 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     pct_data['linearity'] = 100.0*((pct_data['mean'] - (fit[1]+fit[0]*pct_data['exposure'])) / (fit[1]+fit[0]*pct_data['exposure']))
     lin_min = pct_data['linearity'][lin_range].min()
     lin_max = pct_data['linearity'][lin_range].max()
+
+    # fit quadratic to nonlinearity model
+    lin_range = (pct_data['mean'] < sat_cap*0.95) & (pct_data['mean'] > sat_cap*0.05)
+    linear_model = np.polyfit(pct_data['mean'][lin_range], pct_data['linearity'][lin_range], 2)
 
     # convet dark signal to electrons
     # pct_data['d_mean'] = pct_data['d_mean'] * k_adc
@@ -3851,7 +3935,7 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     # get electron noise
     pct_data['e-_noise'] = pct_data['std_s'] * k_adc
 
-    return pct_data, full_well, k_adc, read_noise, lin_min, lin_max, offset, response
+    return pct_data, sat_cap, k_adc, full_well, read_noise, lin_min, lin_max, linear_model, offset, response, prnu
 
 def get_exposures(smpl_imgs: Dict) -> pd.Series:
     """Show the exposures for each channel of the given set of channels.
