@@ -3038,6 +3038,7 @@ def display_scene(
             threshold=threshold,
             vmin=vmin, vmax=vmax,
             context=smpl_cntxt)
+                
 
     show_grid(fig, ax)
 
