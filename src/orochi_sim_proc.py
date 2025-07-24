@@ -14,16 +14,18 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import colors
 import matplotlib as mpl
+import matplotlib.gridspec as gridspec
 from matplotlib import ticker as mticker
 import numpy as np
 import pandas as pd
 from roipoly import RoiPoly
+import seaborn as sns
 import scipy.optimize as opt
 import scipy.signal as sig
 import scipy.ndimage as ndi
 from shutil import copytree, copy
 import tifffile as tiff
-from typing import Tuple, Dict, Union, List
+from typing import Tuple, Dict, Union, List, Literal
 import orochi_sim_ctrl as osc
 
 FIG_W = 10 # figure width in inches
@@ -58,10 +60,28 @@ CAM_ANGLES = {
     7: [30.00, -0.10, -0.10, 10.025, 315.000, 23.887]
 }
 
+CAM2BAND_DICT = { # this won't always work...
+    0: 6,
+    1: 2,
+    2: 1,
+    3: 3,
+    4: 5,
+    5: 7,
+    6: 8,
+    7: 4
+}
+
 class Image:
     """Super class for handling image import and export.
     """
-    def __init__(self, scene_path_in: Path, scene_path_out: Path, channel: str, img_type: str, roi: bool=False) -> None:
+    def __init__(
+            self, 
+            scene_path_in: Path, 
+            scene_path_out: Path, 
+            channel: str, 
+            img_type: str, 
+            roi: bool=False, 
+            roi_name: Literal['capture_meta', 'capture_config']='capture_config') -> None:
         """Initialise properties. Most of these are populated during image load.
         """
         self.scene_dir = Path(scene_path_in, channel) # input directory
@@ -77,10 +97,12 @@ class Image:
         self.width = None
         self.height = None
         self.cwl = None
+        self.band = None
         self.fwhm = None
         self.fnumber = None
         self.flength = None
         self.exposure = None
+        self.roi_name = roi_name
         self.roix = None
         self.roiy = None
         self.roiw = None
@@ -100,11 +122,25 @@ class Image:
         self.dif_img = None   
 
     def image_display(self,
-                      statistic: str='averaged',
+                      statistic: Literal[
+                          'single-frame',
+                          'averaged', 
+                          'single-frame-noise', 
+                          'averaged-noise', 
+                          'single-frame-snr', 
+                          'averaged-snr', 
+                          'dif_img'
+                        ]='averaged',
                       ax: object=None, histo_ax: object=None,
                       threshold: float=None,
-                      draw_roi: bool=False, polyroi: bool=False,
-                      window: Union[bool, str]=False,
+                      draw_roi: bool=False, 
+                      polyroi: bool=False,
+                      window: Literal[
+                            True,
+                            False,
+                            'roi',
+                            'roi-centred'
+                        ]=False,
                       context: object=None,
                       vmin: float=None, vmax: float=None) -> None:
         """Display the image mean and standard deviation in one frame.
@@ -172,7 +208,7 @@ class Image:
         if threshold:
             img = np.where(img < threshold, np.nan, img)
 
-        if window is True:
+        if window == 'default':
             # set image coordinate limits
             win_y = self.winy
             win_x = self.winx
@@ -184,7 +220,7 @@ class Image:
             win_x = self.roix
             win_h = self.roih
             win_w = self.roiw
-        elif window == 'roi_centred':
+        elif window == 'roi-centred':
             # set image coordinate limits
             self.winy = (self.roiy + self.roih//2) - self.winh//2
             self.winx = (self.roix + self.roiw//2) - self.winw//2
@@ -192,7 +228,7 @@ class Image:
             win_x = self.winx
             win_h = self.winh
             win_w = self.winw
-        else:
+        elif window == 'full-frame':
             win_y = 0
             win_x = 0
             win_h = self.height
@@ -204,6 +240,8 @@ class Image:
 
         win_img = img[win_y:win_y+win_h, win_x:win_x+win_w]
         extent = [win_x, win_x+win_w, win_y+win_h, win_y] # coordinates of (left, right, bottom, top)
+
+        im_ratio = win_img.shape[0] / win_img.shape[1]
 
         col = channel_cols(self.camera)     
         if histo_ax is not None:
@@ -245,12 +283,12 @@ class Image:
             sigma_2_x = lambda x: (x * roi_std) + roi_ave
             
             histo_ax.hist(bins[:-1], bins, weights=counts,
-                        label=f'{int(self.cwl)} nm ({self.camera})',
+                        label=f'{int(self.cwl)} nm ({self.band})',
                         color=col,
                         log=True, fill=False, stacked=True, histtype='step')
             histo_ax.set_xlabel(label)
             # histo_ax.set_box_aspect(im_ratio)
-            histo_ax.legend()
+            histo_ax.legend(fontsize='small')
             histo_ax.set_title(title)
 
         if statistic=='dif_img':
@@ -265,15 +303,13 @@ class Image:
         # draw window/ROI
         if draw_roi:
             rect = patches.Rectangle((self.roix, self.roiy), self.roiw, self.roih, linewidth=1, edgecolor='r', facecolor='none')        
-            ax.add_patch(rect)        
+            ax.add_patch(rect)                
 
-        im_ratio = win_img.shape[0] / win_img.shape[1]
-
-        cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, pad=0.08)           
+        cbar = plt.colorbar(ave, ax=ax, fraction=0.047*im_ratio, pad=0.09)           
         # add axis to the color bar centered on the mean and extending in std. dev.
         cbar2 = cbar.ax.secondary_yaxis('left',functions=(x_2_sigma, sigma_2_x))
 
-        ax.set_title(f'Device {self.camera} ({int(self.cwl)} nm)')
+        ax.set_title(f'Band {self.band} ({int(self.cwl)} nm)')
 
         if context is not None:
             # draw context image
@@ -555,16 +591,19 @@ class Image:
             except ValueError:
                 print('bad file')
             img_arr = img.asarray()
+
             img_list.append(img_arr)
             meta = img.imagej_metadata
             self.camera = self.check_property(self.camera, meta['camera'])
             self.serial = self.check_property(self.serial, meta['serial'])
             self.cwl = self.check_property(self.cwl, meta['cwl'])
 
-            # NOTE - error for 650 nm filter FWHM - recorded as 50 nm, actually only 10 nm
-            if self.cwl == 650:
-                self.fwhm = 10
-                meta['fwhm'] = 10                
+            self.band = CAM2BAND_DICT[self.camera]
+
+            # # NOTE - error for 650 nm filter FWHM - recorded as 50 nm, actually only 10 nm - no longer needed!
+            # if self.cwl == 650:
+            #     self.fwhm = 10
+            #     meta['fwhm'] = 10                
             
             self.fwhm = self.check_property(self.fwhm, meta['fwhm'])
 
@@ -583,14 +622,18 @@ class Image:
             cam_name = f'DMK 33GX249 {int(self.serial)}'
             cam_props = camera_info[cam_name]
             # currently roiy and roix labels are inverted - so correct on load in here
-            self.roiy = self.check_property(self.roiy, meta['roiy'])
-            self.roix = self.check_property(self.roix, meta['roix'])
-            self.roih = self.check_property(self.roih, meta['roih'])
-            self.roiw = self.check_property(self.roiw, meta['roiw'])
-            # self.roiy = cam_props['roix']
-            # self.roix = cam_props['roiy']
-            # self.roih = cam_props['roiw']
-            # self.roiw = cam_props['roih']
+            if self.roi_name == 'capture_meta':
+                self.roiy = self.check_property(self.roiy, meta['roiy'])
+                self.roix = self.check_property(self.roix, meta['roix'])
+                self.roih = self.check_property(self.roih, meta['roih'])
+                self.roiw = self.check_property(self.roiw, meta['roiw'])
+            elif self.roi_name == 'capture_config':
+                self.roiy = cam_props['roix']
+                self.roix = cam_props['roiy']
+                self.roih = cam_props['roiw']
+                self.roiw = cam_props['roih']
+            else:
+                raise ValueError('Error: ROI name not recognised')
             self.winy = WINDOWS[self.camera][0]
             self.winx = WINDOWS[self.camera][1]
             self.winh = WINDOWS[self.camera][2]
@@ -687,7 +730,7 @@ class Image:
         self.units = 'DN/s'
 
     def set_roi(self, 
-                threshold: int=None, 
+                roi_name: str,                
                 roi_size: Union[int, Tuple[int, int]]=None, 
                 roi_params: Tuple=None,
                 cross_hair_is_centre: bool=False) -> None:
@@ -712,9 +755,9 @@ class Image:
 
         # if not 8 bit convert for display
         if img.dtype != np.uint8:
-            # _, img_ave, _, _ = self.roi_image()
+            _, img_ave, _, _ = self.roi_image()
             # if img_ave.shape == (0,0):
-            img_ave = self.img_ave
+            # img_ave = self.img_ave
             img = np.clip(np.floor(img * 255/np.nanmax(img_ave)), 0, 255).astype(np.uint8)
 
         if roi_params is None:
@@ -759,6 +802,8 @@ class Image:
             self.roiw = int(roi[3])
             if cross_hair_is_centre:
                 print('Using manual ROI: cross_hair_is_centre = True ignored')
+
+        self.roi_name = roi_name
 
         print(f'{self.channel} ROI set to: top-left corner:(y: {self.roiy}, x: {self.roix}), h: {self.roih} w: {self.roiw}')
 
@@ -940,11 +985,42 @@ class LightImage(Image):
         self.units = 'Above-Bias Signal DN'
         print(f'Subtracting dark frame for: {self.camera} ({int(self.cwl)} nm)')
 
+    def linearity_correction(self, linearity_corr_dir: Path) -> None:
+        """Apply nonlinearity correction to the image
+
+        :param linearity_corr_dir: Path to nonlinearity correction coefficients
+        :type linearity_corr_dir: Path
+        """        
+        # get the linearity correction coefficient
+        nl_0, nl_1, nl_2 = self.load_linearity_corr(linearity_corr_dir)
+
+        # compute the correction amount
+        nl_corr = nl_0 + nl_1*self.img_one + nl_2*self.img_one**2
+
+        self.img_one = self.img_one / (1 + nl_corr/100)
+
+        self.img_ave = self.img_ave / (1 + nl_corr/100)
+
+        # TODO - uncertainty propagation from NL correction
+
+    def load_linearity_corr(self, linearity_corr_dir: Path) -> Tuple[float, float, float]:
+        """Load the linearity correction coefficients from the given directory
+
+        :param linearity_corr_dir: Directory to linearity correction data
+        :type linearity_corr_dir: Path
+        :return: Linearity correction coefficients
+        :rtype: Tuple[float, float, float]
+        """        
+        corr_file = Path(linearity_corr_dir, str(self.camera)+'_linear_corr_coeffs').with_suffix('.csv')
+        corr_coeffs = pd.read_csv(corr_file)
+
+        return corr_coeffs.to_numpy()[0]
+
     def flat_field(self, flat_image_dir: Path) -> None:
         """Apply flat field correction to the image
 
-        :param flat_image: Flat Image object
-        :type flat_image: Image
+        :param flat_image_dir: Flat Field iamge directory
+        :type flat_image_dir: Path
         """      
         # look up the flat-field image in the directory.
         flat_ave, flat_err = self.load_flat_field(flat_image_dir)
@@ -1127,8 +1203,11 @@ class LightImage(Image):
         pred_params, uncert_cov = opt.curve_fit(self.gauss2d, xyi, target_img.ravel(), p0=guess)
 
         x0, y0 = pred_params[1], pred_params[2]
+        
         tgt_abs_y0 = y0 + self.roiy-self.winh//2
         tgt_abs_x0 = x0 + self.roix-self.winw//2
+
+        print(f'   Target Image Centre: x: {tgt_abs_x0}, y: {tgt_abs_y0}')
 
         # fit a 2D Gaussian to cali_source_img using the image ROI as an initial estimate
         yi, xi = np.mgrid[:source.winh, :source.winw]
@@ -1205,10 +1284,12 @@ class RectifiedImage(LightImage):
         self.width = source_image.width
         self.height = source_image.height
         self.cwl = source_image.cwl
+        self.band = source_image.band
         self.fwhm = source_image.fwhm
         self.fnumber = source_image.fnumber
         self.flength = source_image.flength
         self.exposure = source_image.exposure
+        self.roi_name = source_image.roi_name
         self.roix = source_image.roix
         self.roiy = source_image.roiy
         self.roiw = source_image.roiw
@@ -1289,10 +1370,12 @@ class CalibrationImage(Image):
         self.width = source_image.width
         self.height = source_image.height
         self.cwl = source_image.cwl
+        self.band = source_image.band
         self.fwhm = source_image.fwhm
         self.fnumber = source_image.fnumber
         self.flength = source_image.flength
         self.exposure = source_image.exposure
+        self.roi_name = source_image.roi_name
         self.roix = source_image.roix
         self.roiy = source_image.roiy
         self.roiw = source_image.roiw
@@ -1314,7 +1397,7 @@ class CalibrationImage(Image):
         self.get_reference_reflectance()
 
     def get_reference_reflectance(self, 
-                                  filename: str='isas_spectralon_reference'):
+                                  filename: str='spectralon_reference'):
         # load the reference file
         reference_file = Path('..', '..', 
                               'data', 'calibration', 'reflectance_reference', 
@@ -1329,8 +1412,18 @@ class CalibrationImage(Image):
         hi = self.cwl + self.fwhm/2
         band = np.where((data['wavelength'] > lo) & (data['wavelength'] < hi))
         # set the reference reflectance and error
-        self.reference_reflectance = np.mean(data['reflectance'][band])
-        self.reference_reflectance_err = np.std(data['reflectance'][band]) / np.sqrt(len(data['reflectance'][band]))
+        # self.reference_reflectance = np.mean(data['reflectance'][band])
+        # # self.reference_reflectance_err = np.std(data['reflectance'][band]) / np.sqrt(len(data['reflectance'][band]))
+        # self.reference_reflectance_err = np.sqrt(np.mean(data['uncertainty'][band]**2))
+        # Weighted Mean
+        self.reference_reflectance = np.sum(data['reflectance'][band] / data['uncertainty'][band]**2) / np.sum(1.0 / data['uncertainty'][band]**2)
+        # Unbiased Standard Error on the Weighted Mean
+        n_eff = np.sum(1.0 / data['uncertainty'][band])**2 / np.sum(1.0 / data['uncertainty'][band]**2)
+        correction = n_eff / (n_eff - 1)
+        numerator = np.sum((1.0 / data['uncertainty'][band])*(data['reflectance'][band] - self.reference_reflectance)**2)
+        denominator = np.sum(1.0 / data['uncertainty'][band])
+        self.reference_reflectance_err = np.sqrt(correction * (numerator / denominator)/n_eff)
+
 
     def mask_target(self, clip: float=0.10):
         """Mask the calibration target in the image."""
@@ -1395,10 +1488,12 @@ class ReflectanceImage(Image):
         self.width = source_image.width
         self.height = source_image.height
         self.cwl = source_image.cwl
+        self.band = source_image.band
         self.fwhm = source_image.fwhm
         self.fnumber = source_image.fnumber
         self.flength = source_image.flength
         self.exposure = source_image.exposure
+        self.roi_name = source_image.roi_name
         self.roix = source_image.roix
         self.roiy = source_image.roiy
         self.roiw = source_image.roiw
@@ -1440,11 +1535,12 @@ class ReflectanceImage(Image):
         lst_one = self.img_one.copy()
         lst_ave = self.img_ave.copy()
 
-        # img_one
-        self.img_one = self.img_one * cali_coeff
+        # convert to reflectance, applying masking
+        # img_one    
+        self.img_one = np.where(self.img_one > 3900.0/self.exposure, np.nan, self.img_one) * cali_coeff
         # img_ave            
-        self.img_ave = self.img_ave * cali_coeff
-        self.units = 'Reflectance'
+        self.img_ave = np.where(self.img_ave > 3900.0/self.exposure, np.nan, self.img_ave) * cali_coeff
+        self.units = 'Reflectance Factor'
 
         # img_std
         out = np.full(self.img_std.shape, np.nan)
@@ -1563,6 +1659,7 @@ class CoAlignedImage(Image):
         self.width = source_image.width
         self.height = source_image.height
         self.cwl = source_image.cwl
+        self.band = source_image.band
         self.fwhm = source_image.fwhm
         self.fnumber = source_image.fnumber
         self.flength = source_image.flength
@@ -1571,6 +1668,7 @@ class CoAlignedImage(Image):
         self.n_imgs = source_image.n_imgs
         self.img_ave = source_image.img_ave
         self.img_std = source_image.img_std
+        self.roi_name = source_image.roi_name
         self.roix = source_image.roix
         self.roiy = source_image.roiy
         self.roiw = source_image.roiw
@@ -1756,10 +1854,12 @@ class GeoCalImage(Image):
         self.width = source_image.width
         self.height = source_image.height
         self.cwl = source_image.cwl
+        self.band = source_image.band
         self.fwhm = source_image.fwhm
         self.fnumber = source_image.fnumber
         self.flength = source_image.flength
         self.exposure = source_image.exposure
+        self.roi_name = source_image.roi_name
         self.roix = source_image.roix
         self.roiy = source_image.roiy
         self.roiw = source_image.roiw
@@ -2751,20 +2851,22 @@ class StereoPair():
 
 def load_scene(
         scene_path: Path, 
+        scene_name: str=None,
         dark_path: Path=None, 
+        lin_corr_path: Path=None,
         flat_path: Path=None,
         product_path: Path=None,
         calibration_path: Path=None,
         img_type: str='img',
         display: bool=True,
         display_dark: bool=False,
-        window: Union[bool, str]=True, 
+        window: Literal['default', 'roi', 'roi-centred', 'full-frame']='default', 
         draw_roi: bool=True,        
         caption: str=None,         
         export_scene: bool=True,
-        float32: bool=True, 
+        float32: bool=False, 
         uint16: bool=False, 
-        uint8: bool=False, 
+        uint8: bool=True, 
         fits: bool=True) -> Dict:
     """Load images of the sample.
 
@@ -2797,13 +2899,17 @@ def load_scene(
     if 'products' in channels:
         channels.remove('products')
     
-    scene = scene_path.name
+    if scene_name:
+        scene = scene_name
+    else:
+        scene = scene_path.name
     
     scene_imgs = {} # store the scene objects in a dictionary
     dark_imgs = {}
 
     for channel in channels:
         chnl_scene = LightImage(scene_path, product_path, channel, img_type=img_type, calibration_dir=calibration_path)
+        chnl_scene.scene = scene
         chnl_scene.image_load()
         print(f'Loading {scene}: {chnl_scene.camera} ({int(chnl_scene.cwl)} nm)')
 
@@ -2826,9 +2932,14 @@ def load_scene(
             dark_smpl = chnl_scene.estimate_dark_signal()
             chnl_scene.dark_subtract(dark_smpl)
 
+
         # flat fielding
         if flat_path is not None:
             chnl_scene.flat_field(flat_path)
+
+        # linearity correction
+        if isinstance(lin_corr_path, Path):
+            chnl_scene.linearity_correction(lin_corr_path)
             
         scene_imgs[channel] = chnl_scene
 
@@ -2878,9 +2989,17 @@ def save_scene(scene_imgs: Dict[str, Image],
 def display_scene(
         scene_imgs: Dict[str, Image], 
         scene: str, 
-        statistic: str='averaged',
+        statistic: Literal[
+            'single-frame',
+            'averaged', 
+            'single-frame-noise', 
+            'averaged-noise', 
+            'single-frame-snr', 
+            'averaged-snr', 
+            'dif_img'
+            ]='averaged',
         caption: str=None,
-        window: Union[bool, str]=True, 
+        window: Literal['default', 'roi', 'roi-centred', 'full-frame']='default',
         draw_roi: bool=True, 
         polyroi: bool=False,
         threshold: float=None,
@@ -2892,14 +3011,18 @@ def display_scene(
     :param scene_imgs: Dictionary of scene images
     :type scene_imgs: Dict
     """
-    channels = list(scene_imgs.keys())
+    channels = sorted(list(scene_imgs.keys()))
+
+    bands = sorted([camera.band for channel, camera in scene_imgs.items()])
+    band2channel = {camera.band:channel for channel, camera in scene_imgs.items()}
     
     title = f'{scene.capitalize()} {statistic}'
     fig, ax = grid_plot(title)
     if caption is not None:
         grid_caption(caption)
 
-    for channel in channels:
+    for band in bands:
+        channel = band2channel[band]
         smpl = scene_imgs[channel]
         if context is not None:
             smpl_cntxt = context[channel]
@@ -2915,8 +3038,24 @@ def display_scene(
             threshold=threshold,
             vmin=vmin, vmax=vmax,
             context=smpl_cntxt)
+                
 
     show_grid(fig, ax)
+
+    # save the image
+    product_dir = Path(scene_imgs[channels[0]].products_dir, scene_imgs[channels[0]].img_type)
+    product_dir.mkdir(parents=True, exist_ok=True)        
+
+    context_dir = Path(product_dir, 'context')
+    context_dir.mkdir(parents=True, exist_ok=True)
+
+    roi_dir = Path(context_dir, scene_imgs[channels[0]].roi_name)
+    roi_dir.mkdir(parents=True, exist_ok=True)
+
+    scene_file =str(Path(roi_dir, scene+'_'+statistic+'_'+scene_imgs[channels[0]].roi_name+'_'+window+'_'+scene_imgs[channels[0]].img_type).with_suffix('.pdf'))
+        
+    fig.savefig(scene_file, bbox_inches='tight')
+    print('Scene saved to:', scene_file)
     
     return fig, ax
 
@@ -2932,7 +3071,7 @@ def show_scene_difference(scene_1: Dict[str, Image], scene_2: Dict[str, Image]):
         diff = smpl_1.img_ave/(np.nanmedian(smpl_1_roi_img)) - smpl_2.img_ave/(np.nanmedian(smpl_2_roi_img))        
         # diff = smpl_1.img_ave - smpl_2.img_ave
         smpl_1.dif_img = diff
-        smpl_1.image_display(window=True, draw_roi=False, ax=ax[smpl_1.camera], histo_ax=ax[8], statistic='dif_img')
+        smpl_1.image_display(window='default', draw_roi=False, ax=ax[smpl_1.camera], histo_ax=ax[8], statistic='dif_img')
     show_grid(fig, ax)
 
 def align_scenes(
@@ -3002,7 +3141,7 @@ def calibrate_channel_reflectance(
         average: bool=False, 
         caption: Tuple[str, str]=None, 
         display: bool=True,
-        window: bool=True,
+        window: Literal['default', 'roi', 'roi-centred', 'full-frame']='roi-centred',
         draw_roi: bool=True) -> Dict:
     """Calibrate the reflectance correction coefficients for images
     of the Spectralon reflectance target.
@@ -3053,7 +3192,7 @@ def apply_reflectance_calibration(
         find_shift: bool=False,
         export_scene: bool=True,
         display: bool=True,
-        window: bool=True,
+        window: Literal['default', 'roi', 'roi-centred', 'full-frame']='roi-centred',
         draw_roi: bool=True,
         caption: Tuple[str,str,str]=None) -> Dict:
     """Apply reflectance calibration coefficients to the sample images.
@@ -3096,6 +3235,43 @@ def apply_reflectance_calibration(
 
     return reflectance
 
+def correct_exposures(
+        scene_imgs: Dict[str, Image],         
+        export_scene: bool=True,
+        display: bool=True,
+        window: Literal['default', 'roi', 'roi-centred', 'full-frame']='roi-centred',
+        draw_roi: bool=True,
+        caption: Tuple[str,str,str]=None) -> Dict:
+    """Apply exposure correction to the sample images.
+
+    :param sample_imgs: Dictionary of LightImage objects (units of DN)
+    :type sample_imgs: Dict
+    :return: Dictionary of Reflectance Images (units of Reflectance)
+    :rtype: Dict
+    """
+    channels = list(scene_imgs.keys())
+    flux = {}  
+    scene = scene_imgs[channels[0]].scene    
+    for channel in channels:
+        smpl = scene_imgs[channel]
+        # apply exposure correction
+        smpl.correct_exposure()      
+        flux[channel] = smpl
+
+    if export_scene:
+        save_scene(flux, float32=True, fits=True, uint8=False, uint16=False)
+
+    if display:
+        title = f'{scene} Digital Flux'
+        display_scene(flux, title, statistic='single-frame', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(flux, title, statistic='averaged', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(flux, title, statistic='single-frame-noise', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(flux, title, statistic='averaged-noise', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(flux, title, statistic='single-frame-snr', window=window, draw_roi=draw_roi, caption=caption)            
+        display_scene(flux, title, statistic='averaged-snr', window=window, draw_roi=draw_roi, caption=caption)            
+
+    return flux
+
 def load_reference_reflectance(refl_imgs, reference_filename: str):
         # load the reference file
         reference_dir = Path('../../data/calibration/reflectance_reference')
@@ -3119,7 +3295,7 @@ def load_reference_reflectance(refl_imgs, reference_filename: str):
             cwls.append(camera.cwl)
             means.append(np.mean(data['reflectance'][band]))
             stds.append(np.std(data['reflectance'][band]))
-        reference_reflectance = pd.DataFrame({'cwl':cwls, 'reflectance':means, 'error':stds})
+        reference_reflectance = pd.DataFrame({'cwl':cwls, 'Reference':means, 'Reference Error':stds})
         reference_reflectance.sort_values(by='cwl', inplace=True)
         return reference_reflectance
 
@@ -3182,8 +3358,26 @@ def normalise_channel_reflectance(
 
     return normalised_scene
 
+def set_scene_name(
+        scene_imgs: Dict[str, Image], 
+        scene_name: str) -> Dict[str, Image]:
+    """Set the scene name for each image in the scene.
+
+    :param scene_imgs: Dictionary of LightImage objects
+    :type scene_imgs: Dict
+    :param scene_name: Name of the scene
+    :type scene_name: str
+    :return: Dictionary of LightImage objects
+    :rtype: Dict
+    """
+    channels = list(scene_imgs.keys())
+    for channel in channels:
+        scene_imgs[channel].scene = scene_name
+    return scene_imgs
+
 def set_channel_rois(
         smpl_imgs: Dict[str, Image], 
+        roi_name: str,
         roi_size: int=None, 
         roi_dict: Dict=None,
         cross_hair_is_centre: bool=False) -> Dict:
@@ -3199,19 +3393,24 @@ def set_channel_rois(
     :rtype: Dict
     """
     channels = list(smpl_imgs.keys())
+    bands = sorted([camera.band for channel, camera in smpl_imgs.items()])
+    band2channel = {camera.band:channel for channel, camera in smpl_imgs.items()}
+
     new_roi_dict = {}
-    for channel in channels:
+    for band in bands:
+        channel = band2channel[band]
         smpl = smpl_imgs[channel]
         if roi_dict is not None:
             roi_params = roi_dict[channel]
         else:
             roi_params = None
         new_roi = smpl.set_roi(
+                    roi_name=roi_name,
                     roi_size=roi_size, 
                     roi_params=roi_params, 
                     cross_hair_is_centre=cross_hair_is_centre)
         new_roi_dict[channel] = new_roi
-    display_rois(smpl_imgs, roi_name='ROI Update', window='roi_centred')
+    display_rois(smpl_imgs, roi_name=roi_name, window='roi-centred')
     return new_roi_dict
 
 def set_roi(aligned_imgs: Dict, base_channel: str='6_550', caption: Tuple[str,str]=(None,None)) -> Dict:
@@ -3248,18 +3447,17 @@ def set_roi(aligned_imgs: Dict, base_channel: str='6_550', caption: Tuple[str,st
     show_grid(fig1, ax1)
     return aligned_imgs
 
-def analyse_roi_reflectance(
-        refl_imgs: Dict[str, ReflectanceImage],
-        roi_name: str,
-        reference_reflectance: pd.DataFrame=None,
+def analyse_roi(
+        scene_imgs: Dict[str, Image],        
+        reference_spectrum: pd.DataFrame=None,
         polyroi: bool=True,
         show_spatial_stddev: bool=False,        
         display_roi: bool=False,
         caption: str=None) -> pd.DataFrame:
-    """Analyse the reflectance over the Region of Interest, 
+    """Analyse the image over the Region of Interest, 
     and plot and export the results
 
-    :param refl_imgs: Dictionary of ReflectanceImage objects
+    :param refl_imgs: Dictionary of Image objects
     :type refl_imgs: Dict
     :return: Pandas DataFrame of reflectance over the ROI
     :rtype: pd.DataFrame
@@ -3278,27 +3476,36 @@ def analyse_roi_reflectance(
     # roi derived stats output
     img_one_snu = []
     img_ave_snu = []
+
     img_one_snr = []
     img_one_ssnur = []
+    img_one_ssemr = []
     img_ave_snr = []
     img_ave_ssnur = []
+    img_ave_ssemr = []
 
     # additional information
     channel_coords = {}
     cwls = []
+    fwhms = []
     n_pixs = []
     exposures = []
     cam_nums = []    
+    bands = []
     phase_angles = []   
     azimuth_angles = [] 
     emission_angles = []
 
-    channels = list(refl_imgs.keys())
+    if reference_spectrum is not None:
+        reference_signal = []
+        reference_error = []
+
+    channels = list(scene_imgs.keys())
     for channel in channels:
-        refl_img = refl_imgs[channel]
-        scene = refl_img.scene
-        products_dir = refl_img.products_dir
-        single_frame_stats, averaged_stats, n_pix, coords = refl_img.image_stats(roi=True, polyroi=polyroi)
+        scene_img = scene_imgs[channel]
+        scene = scene_img.scene
+        products_dir = scene_img.products_dir
+        single_frame_stats, averaged_stats, n_pix, coords = scene_img.image_stats(roi=True, polyroi=polyroi)
         
         img_one_means.append(single_frame_stats[0])
         img_ave_means.append(averaged_stats[0])
@@ -3311,23 +3518,35 @@ def analyse_roi_reflectance(
 
         img_one_snu.append(single_frame_stats[1] / single_frame_stats[0])
         img_ave_snu.append(averaged_stats[1] / averaged_stats[0])
+
         img_one_snr.append(single_frame_stats[0] / single_frame_stats[2])
         img_one_ssnur.append(single_frame_stats[0] / single_frame_stats[1])
         img_ave_snr.append(averaged_stats[0] / averaged_stats[2])
         img_ave_ssnur.append(averaged_stats[0] / averaged_stats[1])
+        img_one_ssemr.append(single_frame_stats[0] / (single_frame_stats[2]  / np.sqrt(n_pix)))
+        img_ave_ssemr.append(averaged_stats[0] / (averaged_stats[2] / np.sqrt(n_pix)))
 
         channel_coords[channel] = coords
-        cwl = refl_img.cwl
+        cwl = scene_img.cwl
+        fwhm = scene_img.fwhm
         cwls.append(cwl)
+        fwhms.append(fwhm)
         n_pixs.append(n_pix)
-        exposures.append(refl_img.exposure)
-        cam_nums.append(refl_img.camera)
-        phase_angles.append(refl_img.phase_angle)
-        azimuth_angles.append(refl_img.azimuth_angle)
-        emission_angles.append(refl_img.emission_angle)
+        exposures.append(scene_img.exposure)
+        cam_nums.append(scene_img.camera)
+        bands.append(scene_img.band)
+        phase_angles.append(scene_img.phase_angle)
+        azimuth_angles.append(scene_img.azimuth_angle)
+        emission_angles.append(scene_img.emission_angle)
+
+        if reference_spectrum is not None:
+            # if multiple entries for cwl, use the cam number and index
+            reference_signal.append(reference_spectrum.loc[scene_img.camera, 'Reference'])            
+            reference_error.append(reference_spectrum.loc[scene_img.camera, 'Reference Error'])
 
     results = pd.DataFrame({
         'cwl':cwls, 
+        'fwhm':fwhms,
         'Phase':phase_angles, 
         'Azimuth': azimuth_angles, 
         'Emission': emission_angles, 
@@ -3343,7 +3562,6 @@ def analyse_roi_reflectance(
 
         'Std. Err. of Mean of Single-Frame ROI': img_one_stderrs, 
         'Std. Err. of Mean of Averaged ROI':img_ave_stderrs, 
-
                 
         'ROI N-pixels': n_pixs, 
         'ROI Single-Frame Spatial Nonuniformity': img_one_snu,
@@ -3351,16 +3569,45 @@ def analyse_roi_reflectance(
 
         'Single-Frame SNR <signal>/<noise>': img_one_snr,
         'Single-Frame SNR <signal>/stddev(signal)': img_one_ssnur,
+        'Single-Frame SNR <signal>/stderr(signal)': img_one_ssemr,
 
         'Averaged SNR <signal>/<noise>': img_ave_snr,
         'Averaged SNR <signal>/stddev(signal)': img_ave_ssnur,
-        
+        'Averaged SNR <signal>/stderr(signal)': img_ave_ssemr,
+                
         'Exposure': exposures, 
-        'Device': cam_nums}) #, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
+        'Device': cam_nums,
+        'Band': bands}) #, 'reflectance (wt)':wt_means, 'std (wt)':wt_stds})
     
+    if reference_spectrum is not None:
+        results['Reference'] = reference_signal
+        results['Reference Error'] = reference_error
+
     results.sort_values(by='cwl', inplace=True)
 
+    # apply normalisation to cwl==550 or Band 3
+    norm_band = 3
+    norm_cwl = 550
+    norm_idx = results.index[results['Band'] == norm_band][0]
+    norm_mean = results['Mean of Averaged ROI'][norm_idx]
+    norm_err = results['Mean of Averaged Noise ROI'][norm_idx]
+    norm_std = results['Std. Dev. of Averaged ROI'][norm_idx]
+    norm_mean_single = results['Mean of Single-Frame ROI'][norm_idx]
+    norm_std_single = results['Std. Dev. of Single-Frame ROI'][norm_idx]
+    norm_err_single = results['Mean of Single-Frame Noise ROI'][norm_idx]
+    results['Mean of Averaged ROI Normalised'] = results['Mean of Averaged ROI'] / norm_mean
+    results['Std. Dev. of Averaged ROI Normalised'] = results['Mean of Averaged ROI Normalised'] * np.sqrt((results['Std. Dev. of Averaged ROI'] / results['Mean of Averaged ROI'])**2 + (norm_std / norm_mean)**2)
+    results['Mean of Averaged Noise ROI Normalised'] = results['Mean of Averaged ROI Normalised'] * np.sqrt((results['Mean of Averaged Noise ROI'] / results['Mean of Averaged ROI'])**2 + (norm_err / norm_mean)**2)
+    results['Mean of Single-Frame ROI Normalised'] = results['Mean of Single-Frame ROI'] / norm_mean_single
+    results['Std. Dev. of Single-Frame ROI Normalised'] = results['Mean of Single-Frame ROI Normalised'] * np.sqrt((results['Std. Dev. of Single-Frame ROI'] / results['Mean of Single-Frame ROI'])**2 + (norm_std_single / norm_mean_single)**2)
+    results['Mean of Single-Frame Noise ROI Normalised'] = results['Mean of Single-Frame ROI Normalised'] * np.sqrt((results['Mean of Single-Frame Noise ROI'] / results['Mean of Single-Frame ROI'])**2 + (norm_err_single / norm_mean_single)**2)
+    
+    if reference_spectrum is not None:
+        results['Reference Normalised'] = results['Reference'] / results['Reference'][norm_idx]
+        results['Reference Error Normalised'] = results['Reference Normalised'] * np.sqrt((results['Reference Error'] / results['Reference'])**2 + (results['Reference Error'][norm_idx] / results['Reference'][norm_idx])**2)
+
     # prepare output directory    
+    roi_name = scene_img.roi_name
     rois_dir = Path(products_dir, 'rois')
     rois_dir.mkdir(parents=True, exist_ok=True)
     roi_dir = Path(rois_dir, roi_name)
@@ -3372,13 +3619,13 @@ def analyse_roi_reflectance(
 
     # output the raw data for each channel
     for channel in channels:
-        refl_img = refl_imgs[channel]
+        scene_img = scene_imgs[channel]
         coords = channel_coords[channel]        
         # construct data Df
-        single_frame_pixels = refl_img.img_one[coords[0], coords[1]]
-        averaged_pixels = refl_img.img_ave[coords[0], coords[1]]
-        stddev_pixels = refl_img.img_std[coords[0], coords[1]]
-        stderr_pixels = refl_img.img_err[coords[0], coords[1]]
+        single_frame_pixels = scene_img.img_one[coords[0], coords[1]]
+        averaged_pixels = scene_img.img_ave[coords[0], coords[1]]
+        stddev_pixels = scene_img.img_std[coords[0], coords[1]]
+        stderr_pixels = scene_img.img_err[coords[0], coords[1]]
         pixel_data = pd.DataFrame({
             'x':coords[1], 'y':coords[0], 
             'single-frame-values':single_frame_pixels, 
@@ -3393,134 +3640,392 @@ def analyse_roi_reflectance(
         filepath = Path(roi_data_dir, filename)
         pixel_data.to_csv(filepath, index=False)
 
+    scene = scene_img.scene
+
     if display_roi:
-        fig, ax = display_rois(refl_imgs, roi_name=roi_name, polyroi=polyroi)
-        # save the figure
-        filename = f'{roi_name}_context_gridplot.png'
-        filepath = Path(roi_dir, filename)
-        fig.savefig(filepath, dpi=300)
-
         # show the ROI as the full window
-        fig, ax = display_scene(refl_imgs, roi_name, statistic='averaged', window='roi', draw_roi=True, polyroi=polyroi)        
+        fig, ax = display_scene(scene_imgs, scene, statistic='single-frame', window='roi-centred', draw_roi=True, polyroi=polyroi)
+        fig, ax = display_scene(scene_imgs, scene, statistic='single-frame', window='roi', draw_roi=True, polyroi=polyroi) 
+        fig, ax = display_scene(scene_imgs, scene, statistic='single-frame-snr', window='roi', draw_roi=True, polyroi=polyroi)        
 
-    fig = plt.figure()
-    plt.grid(visible=True)
+    # PLOT SIGNAL
 
-    if reference_reflectance is not None:
-        plt.errorbar(
-            x=reference_reflectance.cwl,
-            y=reference_reflectance.reflectance,
-            yerr=reference_reflectance.error,
-            fmt='.--',
-            color='g',
-            capsize=5.0,
-            label='Reference Reflectance ± 1σ'
+    sns.set_context("paper", font_scale=1.1)
+    sns.set_style('ticks')
+
+    fig, ax = plt.subplots(figsize=(5,3.4), dpi=300)
+    # add gridlines
+    # ax.grid(True, which='both', linewidth=0.5)
+
+    if scene_img.units == 'Above-Bias Signal DN':
+        notation = 'S'
+    elif scene_img.units == 'Reflectance Factor':
+        notation = 'R'
+    elif scene_img.units == 'DN/s':
+        notation = rf'\Phi'
+
+    # Mean Reflectance ± Mean of Noise
+    ax.errorbar(    
+        x = results['cwl'],
+        y = results['Mean of Single-Frame ROI'],
+        yerr = results['Mean of Single-Frame Noise ROI'],
+        label = rf'$\mu_{notation} \pm \mu_{{\sigma_{notation}}}$ {scene}',
+        fmt='o-',    
+        # ecolor='k',
+        capsize=5
+    )
+
+    # Reference Reflectance ± Expected Error
+    if reference_spectrum is not None:
+        ax.errorbar(    
+            x = results['cwl'],
+            y = results['Reference'],
+            yerr = results['Reference Error'],
+            label = rf'${notation} \pm \sigma_{notation}$ Reference',
+            fmt='s-',
+            # color='cyan',
+            # ecolor='k',
+            capsize=5,
+            zorder=1
         )
 
+    # # Mean reflectance ± Standard Error of Reflectance - perhaps remove this?
     if show_spatial_stddev:
-        plt.errorbar(
-                x=results.cwl,
-                y=results['Mean of Single-Frame ROI'],
-                yerr=results['Std. Dev. of Single-Frame ROI'],
-                fmt='',
-                linestyle='',   
-                ecolor='b',
-                elinewidth=1.0,
-                label='±Std. Dev. of Single-Frame ROI',
-                capsize=4.0)
-        title_sfx = 'Spatial Std. Dev.'
-        file_sfx = 'spatial_stddev'
-    else:
-        plt.errorbar(
-                x=results.cwl,
-                y=results['Mean of Single-Frame ROI'],
-                yerr=results['Std. Err. of Mean of Single-Frame ROI'],
-                fmt='',
-                linestyle='',
-                ecolor='b',
-                elinewidth=1.0,
-                label='±Std. Err. of Mean of Single-Frame ROI',
-                capsize=6.0)
-        plt.errorbar(
-                x=results.cwl,
-                y=results['Mean of Single-Frame ROI'],
-                yerr=results['Mean of Single-Frame Noise ROI'],
-                fmt='',
-                linestyle='',
-                ecolor='b',
-                elinewidth=1.0,
-                label='±Mean of Single-Frame Noise ROI',
-                capsize=2.0)
-        title_sfx = 'Noise Std. Err.'
-        file_sfx = 'noise_stddev'
+        # Mean reflectance ± Standard Deviation of Reflectance
+        ax.errorbar(    
+            x = results['cwl'],
+            y = results['Mean of Single-Frame ROI'],
+            yerr = results['Std. Dev. of Single-Frame ROI'],
+            label = fr'$\mu_{notation}\pm s_{notation}$ {scene}',  
+            marker='none',
+            linestyle='none', 
+            ecolor='k',
+            capsize=2
+        )
 
-    if show_spatial_stddev:
-        plt.errorbar(
-                x=results.cwl,
-                y=results['Mean of Averaged ROI'],
-                yerr=results['Std. Dev. of Averaged ROI'],
-                fmt='',
-                linestyle='',   
-                ecolor='r',
-                elinewidth=1.0,
-                label='±Std. Dev. of Averaged ROI',
-                capsize=4.0)
-        title_sfx = 'Spatial Std. Dev.'
-        file_sfx = 'spatial_stddev'
+        # ax.errorbar(    
+        #     x = results['cwl'],
+        #     y = results['Mean of Single-Frame ROI'],
+        #     yerr = results['Std. Err. of Mean of Single-Frame ROI'],
+        #     label = fr'$\mu_{notation}\pm \mathrm{{SEM}}_{notation}$ {scene}',  
+        #     marker='none',
+        #     linestyle='none', 
+        #     ecolor='k',
+        #     capsize=7
+        # )
 
-    else:
-        plt.errorbar(
-                x=results.cwl,
-                y=results['Mean of Averaged ROI'],
-                yerr=results['Std. Err. of Mean of Averaged ROI'],
-                fmt='',
-                linestyle='',
-                ecolor='r',
-                elinewidth=1.0,
-                label='±Std. Err. of Mean of Averaged ROI',
-                capsize=6.0)
-        plt.errorbar(
-                    x=results.cwl,
-                    y=results['Mean of Averaged ROI'],
-                    yerr=results['Mean of Averaged Noise ROI'],
-                    fmt='',
-                    linestyle='',
-                    ecolor='r',
-                    elinewidth=1.0,
-                    label='±Mean of Averaged Noise ROI',
-                    capsize=2.0)
-        title_sfx = 'Noise Std. Err.'
-        file_sfx = 'noise_stddev'
-        
-    plt.plot(
-        results.cwl,
-        results['Mean of Single-Frame ROI'],
-        'bo-',
-        label=f'Mean of Single-Frame ROI'        
+    cam_cols = channel_cols()
+
+    min_550 = results[results['cwl'] == 550]['Mean of Single-Frame ROI'].idxmin()
+    for i in np.arange(0, len(results)):
+        lo_cwl = results['cwl'][i] - results['fwhm'][i]/2
+        hi_cwl = results['cwl'][i] + results['fwhm'][i]/2
+        ax.axvspan(lo_cwl, hi_cwl, alpha=0.2, color=cam_cols[results['Device'][i]])    
+        # get ylim
+        ymin, ymax = ax.get_ylim()
+        x_place = results['cwl'][i] - results['fwhm'][i]/2
+        y_place = ymax
+        if i == min_550:
+            x_place = results['cwl'][i] + results['fwhm'][i]/2
+            y_place = ymin                
+
+        # if show_spatial_stddev:
+        #     error = results['Std. Dev. of Single-Frame ROI'][i]
+        # else:
+        #     error = results['Mean of Single-Frame Noise ROI'][i]        
+        # annotate with phase angle
+        ax.annotate(f'$g$: {results["Phase"][i]:.1f}°', 
+                    (x_place, y_place), 
+                    xytext=(0.05,0.05), 
+                    textcoords='offset fontsize', 
+                    fontsize='x-small', 
+                    ha='left', va='bottom') 
+        # annotate with emission angle
+        ax.annotate(f'$e$: {results["Emission"][i]:.1f}°', 
+                    (x_place, y_place), 
+                    xytext=(0.05,1.05), 
+                    textcoords='offset fontsize', 
+                    fontsize='x-small', 
+                    ha='left', va='bottom')
+        # annotate with azimuth angle
+        ax.annotate(rf'$\psi$: {results["Azimuth"][i]:.1f}°', 
+                    (x_place, y_place), 
+                    xytext=(0.05,2.05), 
+                    textcoords='offset fontsize', 
+                    fontsize='x-small', 
+                    ha='left', va='bottom')
+
+    ax.legend(fontsize='x-small', loc='lower right')
+
+    ax.set_xlabel('Wavelength (nm)')
+    ax.set_ylabel(scene_img.units)
+
+    sns.despine(ax=ax)
+
+    ax.tick_params(reset=True)
+    ax.tick_params(which='both', length=5, direction='out', top=False, right=False, left=True, bottom=True)
+
+    fig.tight_layout()
+
+    file_units = scene_img.units.replace('/', '')
+    fig.savefig(Path(roi_dir, f'spectrum_{scene}_{file_units}.pdf'))
+
+    # PLOT NORMALISED SIGNAL
+
+    sns.set_context("paper", font_scale=1)
+    sns.set_style("white")
+
+    fig, ax = plt.subplots(figsize=(5,3.4), dpi=300)
+    # add gridlines
+    # ax.grid(True, which='both', linewidth=0.5)
+
+    if scene_img.units == 'Above-Bias Signal DN':
+        notation = 'S'
+    elif scene_img.units == 'Reflectance Factor':
+        notation = 'R'
+    elif scene_img.units == 'DN/s':
+        notation = rf'\Phi'
+
+    # Mean Reflectance ± Mean of Noise
+    ax.errorbar(    
+        x = results['cwl'],
+        y = results['Mean of Single-Frame ROI Normalised'],
+        yerr = results['Mean of Single-Frame Noise ROI Normalised'],
+        label = rf'$N_{{\mu_{notation}}}^{{{norm_cwl}}} \pm \sigma_{{\mu_{{\sigma}}.N}}$ {scene}',
+        fmt='o-',    
+        # ecolor='k',
+        capsize=5
     )
 
-    plt.plot(
-        results.cwl,
-        results['Mean of Averaged ROI'],
-        'ro-',
-        label=f'Mean of Averaged ROI'        
+    # Reference Reflectance ± Expected Error
+    if reference_spectrum is not None:
+        ax.errorbar(    
+            x = results['cwl'],
+            y = results['Reference Normalised'],
+            yerr = results['Reference Error Normalised'],
+            label = rf'$N_{notation}^{{{norm_cwl}}} \pm \sigma_{{\sigma_{notation}.N}}$ Reference',
+            fmt='s-',
+            # color='cyan',
+            # ecolor='k',
+            capsize=5,
+            zorder=0
+        )
+
+    # # Mean reflectance ± Standard Error of Reflectance - perhaps remove this?
+    if show_spatial_stddev:
+        # Mean reflectance ± Standard Deviation of Reflectance
+        ax.errorbar(    
+            x = results['cwl'],
+            y = results['Mean of Single-Frame ROI Normalised'],
+            yerr = results['Std. Dev. of Single-Frame ROI Normalised'],
+            label = rf'$N_{{\mu_{notation}}}^{{{norm_cwl}}} \pm \sigma_{{s_{notation}.N}}$ {scene}',
+            marker='none',
+            linestyle='none', 
+            ecolor='k',
+            capsize=2,
+            zorder=1,
+            elinewidth=0.9
+        )
+
+        # ax.errorbar(    
+        #     x = results['cwl'],
+        #     y = results['Mean of Single-Frame ROI Normalised'],
+        #     yerr = results['Std. Err. of Mean of Single-Frame ROI Normalised'],
+        #     label = fr'$\mu_{notation}\pm \mathrm{{SEM}}_{notation}$ {scene}',  
+        #     marker='none',
+        #     linestyle='none', 
+        #     ecolor='k',
+        #     capsize=7
+        # )
+    dup = False
+    for i in np.arange(0, len(results)):
+        lo_cwl = results['cwl'][i] - results['fwhm'][i]/2
+        hi_cwl = results['cwl'][i] + results['fwhm'][i]/2
+        ax.axvspan(lo_cwl, hi_cwl, alpha=0.2, color=cam_cols[results['Device'][i]])          
+        # get ylim
+        ymin, ymax = ax.get_ylim()
+        x_place = results['cwl'][i] - results['fwhm'][i]/2
+        y_place = ymax
+        if results['cwl'][i] == 550:
+            if dup:
+                x_place = results['cwl'][i] + results['fwhm'][i]/2
+                y_place = ymin                
+            else:
+                dup = True
+        # if show_spatial_stddev:
+        #     error = results['Std. Dev. of Single-Frame ROI'][i]
+        # else:
+        #     error = results['Mean of Single-Frame Noise ROI'][i]        
+        # annotate with phase angle
+        ax.annotate(f'$g$: {results["Phase"][i]:.1f}°', 
+                    (x_place, y_place), 
+                    xytext=(0.01,0.01), 
+                    textcoords='offset fontsize', 
+                    fontsize='x-small', 
+                    ha='left', va='bottom') 
+        # annotate with emission angle
+        ax.annotate(f'$e$: {results["Emission"][i]:.1f}°', 
+                    (x_place, y_place), 
+                    xytext=(0.01,1.01), 
+                    textcoords='offset fontsize', 
+                    fontsize='x-small', 
+                    ha='left', va='bottom')
+        # annotate with azimuth angle
+        ax.annotate(rf'$\psi$: {results["Azimuth"][i]:.1f}°', 
+                    (x_place, y_place), 
+                    xytext=(0.01,2.01), 
+                    textcoords='offset fontsize', 
+                    fontsize='x-small', 
+                    ha='left', va='bottom')
+
+    ax.legend(fontsize='small', loc='lower right') 
+
+    ax.set_xlabel('Wavelength (nm)')
+    ax.set_ylabel('Normalised '+scene_img.units)
+
+    sns.despine(ax=ax)
+
+    ax.tick_params(reset=True)
+    ax.tick_params(which='both', length=5, direction='out', top=False, right=False, left=True, bottom=True)
+
+    fig.tight_layout()
+    fig.savefig(Path(roi_dir, f'spectrum_{scene}_{file_units}_normalised.pdf'))
+
+    # PLOT SNR
+
+    sns.set_context("paper", font_scale=1)
+    sns.set_style("white")
+
+    fig, ax = plt.subplots(figsize=(5,3.4), dpi=300)
+    # add gridlines
+    # ax.grid(True, which='both', linewidth=0.5)
+    # ax.grid(True, which='major', linewidth=0.8)
+
+    if scene_img.units == 'Above-Bias Signal DN':
+        notation = 'S'
+    elif scene_img.units == 'Reflectance Factor':
+        notation = 'R'
+    elif scene_img.units == 'DN/s':
+        notation = rf'\Phi'
+
+    # # Mean Reflectance ± Mean of Noise
+    # ax.plot(    
+    #     results['cwl'],
+    #     results['Single-Frame SNR <signal>/<noise>'],        
+    #     label = rf'$\mathrm{{SNR}}_{{\mu_{{\sigma}}}}$ {scene}',
+    #     marker='o'
+    # )
+
+    # # Mean reflectance ± Standard Deviation of Reflectance
+    # ax.plot(    
+    #     results['cwl'],
+    #     results['Single-Frame SNR <signal>/stddev(signal)'],            
+    #     label = rf'$\mathrm{{SNR}}_{{s}}$ {scene}',
+    #     marker='o',
+    #     color='k',
+    #     linestyle=':'
+    # )
+    
+    cam_cols = list(channel_cols().values())
+
+    ax.bar(    
+        x=results['cwl'],
+        height=results['Single-Frame SNR <signal>/<noise>'],         
+        width = results['fwhm'],
+        color=cam_cols,
+        edgecolor='k',           
+        label = rf'$\mathrm{{SNR}}_{{\mu_{{\sigma}}}}$ {scene}'        
     )
 
-    plt.xlabel('Wavelength (nm)')
-    plt.ylabel('Reflectance')
-    plt.title(f'{scene.capitalize()} Reflectance over ROI {roi_name.capitalize()} ± {title_sfx}')
+    # Mean reflectance ± Standard Deviation of Reflectance
+    ax.bar(    
+        x=results['cwl'],
+        height=results['Single-Frame SNR <signal>/stddev(signal)'],                    
+        width = results['fwhm'],
+        color=cam_cols,
+        edgecolor='k',
+        hatch='//',
+        label = rf'$\mathrm{{SNR}}_{{s}}$ {scene}'
+    )
 
-    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    # add band number notations above each bar
+    for i in range(len(results)):
+        if (results['Band'][i] < 8) and (results['Band'][i] != 3):
+            ax.text(
+                results['cwl'][i],
+                results['Single-Frame SNR <signal>/<noise>'][i] + 0.1,
+                results['Band'][i],
+                ha='center',
+                va='bottom',
+                fontsize=8,
+                color='k'
+            )
+        elif results['Band'][i] == 8:
+            ax.text(
+                results['cwl'][i],
+                results['Single-Frame SNR <signal>/<noise>'][i] + 0.1,
+                '3/8',
+                ha='center',
+                va='bottom',
+                fontsize=8,
+                color='k'
+            )
 
-    filename = f'{roi_name}_reflectance_plot_{file_sfx}.png'
-    filepath = Path(roi_dir, filename)
-    plt.savefig(filepath, dpi=300)
+    ax.tick_params(reset=True)
+    ax.tick_params(which='both', length=5, direction='out', top=False, right=False, left=True, bottom=True)
+
+    # # add band number notations above each bar
+    # for i, band in enumerate(results['Band']):
+    #     if (band < 8) and (band != 3):
+    #         ax.text(
+    #             results['cwl'][i],
+    #             results['Single-Frame SNR <signal>/<noise>'][i] + 0.1,
+    #             results['Band'][i],
+    #             ha='center',
+    #             va='bottom',
+    #             fontsize=8,
+    #             color='k'
+    #         )
+    #     elif band == 8:
+    #         ax.text(
+    #             results['cwl'][i],
+    #             results['Single-Frame SNR <signal>/<noise>'][i] + 0.1,
+    #             f'3/8',
+    #             ha='center',
+    #             va='bottom',
+    #             fontsize=8,
+    #             color='k'
+    #         )
+
+
+    # ax.plot(    
+    #     results['cwl'],
+    #     results['Single-Frame SNR <signal>/stderr(signal)'],
+    #     label = rf'$\mathrm{{SNR}}_{{\mathrm{{SEM}}}}$ {scene}',
+    #     marker='o',
+    #     color='k',
+    #     linestyle='--'
+    # )        
+
+    # ax.set_yscale('log')
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize='8', loc='lower right', framealpha=1)    
+
+    ax.set_xlabel('Wavelength (nm)')
+    ax.set_ylabel('Signal-to-Noise Ratio')
+
+    sns.despine(ax=ax)
+
+    fig.tight_layout()
+    fig.savefig(Path(roi_dir, f'spectrum_{scene}_{file_units}_SNR.pdf'))
 
     if caption is not None:
-        grid_caption(caption)        
-    
+        grid_caption(caption)   
 
-    return results
+    ref = results[['cwl','Mean of Single-Frame ROI', 'Mean of Single-Frame Noise ROI']].copy(deep=True)
+    ref.rename(columns={'Mean of Single-Frame ROI':'Reference', 'Mean of Single-Frame Noise ROI':'Reference Error'}, inplace=True)   
+    
+    return results, ref
 
 def set_channel_polyrois(
         smpl_imgs: Dict[str, Image], 
@@ -3552,7 +4057,12 @@ def set_channel_polyrois(
 
     return new_poly_rois
 
-def display_rois(smpl_imgs: Dict[str, Image], roi_name: str, window: bool=True, draw_roi: bool=True, polyroi: bool=False) -> None:
+def display_rois(
+        smpl_imgs: Dict[str, Image], 
+        roi_name: str, 
+        window: Literal['default', 'roi', 'roi-centred', 'full-frame']='roi-centred', 
+        draw_roi: bool=True, 
+        polyroi: bool=False) -> None:
     """Display the region of interest of each channel in a grid plot.
 
     :param smpl_imgs: Dictioanry of images to display
@@ -3563,13 +4073,34 @@ def display_rois(smpl_imgs: Dict[str, Image], roi_name: str, window: bool=True, 
     :type draw_roi: bool, optional
     :param polyroi: Draw the Polygon Region of Interest, defaults to False
     :type polyroi: bool, optional
-    """    
-    channels = list(smpl_imgs.keys())
+    """   
+    channels = list(smpl_imgs.keys()) 
+    bands = sorted([camera.band for channel, camera in smpl_imgs.items()])
+    band2channel = {camera.band:channel for channel, camera in smpl_imgs.items()}
+    
     fig, ax = grid_plot(f'{roi_name.capitalize()} Region of Interest')
-    for channel in channels:
+    for band in bands:
+        channel = band2channel[band]
         smpl = smpl_imgs[channel]
-        smpl.image_display(statistic='averaged', window=window, draw_roi=draw_roi, polyroi=polyroi, ax=ax[smpl.camera], histo_ax=ax[8])
+        smpl.image_display(statistic='single-frame', window=window, draw_roi=draw_roi, polyroi=polyroi, ax=ax[smpl.camera], histo_ax=ax[8])
     show_grid(fig, ax)
+
+    # save the image
+    product_dir = Path(smpl_imgs[channels[0]].products_dir, smpl_imgs[channels[0]].img_type)
+    product_dir.mkdir(parents=True, exist_ok=True)        
+
+    context_dir = Path(product_dir, 'context')
+    context_dir.mkdir(parents=True, exist_ok=True)
+
+    roi_dir = Path(context_dir, smpl_imgs[channels[0]].roi_name)
+    roi_dir.mkdir(parents=True, exist_ok=True)
+
+    scene = smpl_imgs[channels[0]].scene
+    scene_file =str(Path(roi_dir, scene+'_'+'single-frame'+'_'+smpl_imgs[channels[0]].roi_name+'_'+window+'_'+smpl_imgs[channels[0]].img_type).with_suffix('.pdf'))
+        
+    fig.savefig(scene_file, bbox_inches='tight')
+    print('Scene saved to:', scene_file)
+
     return fig, ax
 
 def export_images(smpl_imgs: Dict[str, Image], uint8: bool=False, uint16: bool=False, roi: bool=False) -> None:
@@ -3588,10 +4119,16 @@ def export_images(smpl_imgs: Dict[str, Image], uint8: bool=False, uint16: bool=F
 
 def grid_plot(title: str=None, projection: str=None):
     cam_ax = {}
+    sns.set_style('ticks')
+    sns.set_context("paper", font_scale=1.1)
     if projection == '3d':
-        fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W), subplot_kw=dict(projection='3d'))
+        fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W), subplot_kw=dict(projection='3d'), dpi=300)
     else:
-        fig, ax = plt.subplots(3,3, figsize=(FIG_W,FIG_W))
+        fig, ax = plt.subplots(3,3, dpi=300, figsize=(FIG_W,FIG_W))
+        # fig = plt.figure(figsize=(FIG_W,FIG_W), dpi=300, layout='constrained')
+        # gs = gridspec.GridSpec(3, 3, figure=fig)
+        # ax = [[fig.add_subplot(gs[i, j]) for j in range(3)] for i in range(3)]
+
     # TODO update this according to camera number
     cam_ax[2] = ax[0][0] # 400
     cam_ax[5] = ax[0][1] # 950
@@ -3603,26 +4140,30 @@ def grid_plot(title: str=None, projection: str=None):
     cam_ax[3] = ax[2][1] # 550
     cam_ax[1] = ax[2][2] # 475
     # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')
-    fig.suptitle(title)
+    # fig.suptitle(title)
     return fig, cam_ax
 
-def channel_cols(channel: str, rgb: bool=False) -> Tuple[int,int,int]:
+def channel_cols(channel: str=None, rgb: bool=False) -> Tuple[int,int,int]:
     
     colours = {}
     colours[2] = 'tab:cyan' # 400
     colours[1] = 'tab:blue'# 475
-    colours[7] = 'tab:green'# 550
-    colours[3] = 'tab:olive'# 550
-    colours[6] = 'tab:orange'# 650
+    colours[3] = 'tab:green'# 550
+    colours[6] = 'tab:olive'# 550
+    colours[7] = 'tab:orange'# 650
     colours[4] = 'tab:red'# 735
     colours[0] = 'tab:purple'# 850
     colours[5] = 'tab:pink'# 950
     # cam_ax[8].set_title(f'Non-Zero & Finite Image Histograms')    
-    if rgb:
-        colour = np.array(colors.to_rgba(colours[channel])[:-1])*255
+
+    if channel is None:
+        return colours
     else:
-        colour = colours[channel]
-    return colour
+        if rgb:
+            colour = np.array(colors.to_rgba(colours[channel])[:-1])*255
+        else:
+            colour = colours[channel]
+        return colour
 
 def show_grid(fig, ax):
     # get individual axis dimensions/ratio
@@ -3633,6 +4174,8 @@ def show_grid(fig, ax):
     fig.set_size_inches(FIG_W*ax_h/ax_w, FIG_W)
     # ax[2].set_axis_off()
     # ax[8].set_axis_off()
+    # fig.tight_layout()
+    ax[8].set_box_aspect(ax_w/ax_h)
     fig.tight_layout()
     # fig.show()
 
@@ -3680,7 +4223,7 @@ def process_flat_fields(flatfield_scene: Dict[str, Image], display: bool=True) -
         scene = ff.scene
 
     if display:
-        display_scene(flatfield_scene, scene, statistic='signal', window=False, draw_roi=False)       
+        display_scene(flatfield_scene, scene, statistic='signal', window='full-frame', draw_roi=False)       
 
     return flatfield_scene
 
@@ -3727,7 +4270,7 @@ def load_dtc_frames(scene_path: Path, channel: str) -> pd.DataFrame:
     dtc_data = dtc_data.sort_values(by='exposure')
     # fit read noise
     # fit linear to std_rs**2 vs exposure
-    fit = np.polyfit(dtc_data['exposure'], dtc_data['std_rs']**2, 1, w=1/dtc_data['std_rs']**2)
+    fit = np.polyfit(dtc_data['exposure'], dtc_data['std_rs']**2, 1, w=1/dtc_data['std_rs']**4)
     if fit[-1] < 0:
         fit[-1] = 0.0
     read_noise = np.sqrt(fit[-1])
@@ -3748,25 +4291,53 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     std_rs = []
     t_exp = []
     n_pix = []
-    # find the frames for the given channel
-    frame_1s = sorted(list(Path(light_path, channel).glob('[!.]*_1_calibration.tif')))
-    frame_2s = sorted(list(Path(light_path, channel).glob('[!.]*_2_calibration.tif')))
+
+    # find the frames for the given channel, and sort by exposure
+    frame_1s = list(Path(light_path, channel).glob('[!.]*_1_calibration.tif'))
+
+    # check number of format of file name, and decide where to get exposure from
+    if len(frame_1s[0].name.split('_')) == 5:
+        expo_i = 2
+    elif len(frame_1s[0].name.split('_')) == 4:
+        expo_i = 1
+    else:
+        print('Bad file name format')
+        raise ValueError
+
+    frame_1s_exposures = [float((f.name.split('_')[expo_i])[:-2]) for f in frame_1s]
+    frame_1s = [x for _, x in sorted(zip(frame_1s_exposures, frame_1s))]
+
+    frame_2s = list(Path(light_path, channel).glob('[!.]*_2_calibration.tif'))
+    frame_2s_exposures = [float((f.name.split('_')[expo_i])[:-2]) for f in frame_2s]
+    frame_2s = [x for _, x in sorted(zip(frame_2s_exposures, frame_2s))]
+
     if dark_path is None:
         dark_path = light_path
-    frame_ds = sorted(list(Path(dark_path, channel).glob('[!.]*_d_drk.tif')))
+    frame_ds = list(Path(dark_path, channel).glob('[!.]*_d_drk.tif'))
+    frame_ds_exposures = [float((f.name.split('_')[expo_i])[:-2]) for f in frame_ds]
+    frame_ds = [x for _, x in sorted(zip(frame_ds_exposures, frame_ds))]
+
     # check the numbers in each list are equal
     # for each exposure, load image 1, 2 and the dark mean image
     n_steps = len(frame_1s)
+
     for i in range(n_steps):
-        img_1 = Image(light_path, None, channel, img_type='img')
+        img_1 = LightImage(light_path, None, channel, img_type='img')
         img_1.image_load(filename=frame_1s[i].name)
-        img_2 = Image(light_path, None, channel, img_type='img')
+                                        
+        img_2 = LightImage(light_path, None, channel, img_type='img')
         img_2.image_load(filename=frame_2s[i].name)
         try:
             drk  = Image(dark_path, None, channel, img_type='img')
         except:
             print('bad dark')
         drk.image_load(filename=frame_ds[i].name)
+
+        # check that the dark frame exposure matches the light frame
+        if not np.isclose(img_1.exposure, drk.exposure, rtol=1e-5, atol=1e-5):
+            print(f'Exposure mismatch between light and dark frames for {channel} at {img_1.exposure} and {drk.exposure}')
+            raise ValueError
+
         # process the images, store the results
         if img_1.img_ave.mean() == 1:
             continue
@@ -3782,7 +4353,7 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
         d_mean.append(dark_mean)
         d_dsnu.append(dark_dsnu)
         std_rs.append(img_off_std_rs)
-        t_exp.append(float(img_1.exposure))
+        t_exp.append(img_1.exposure)
         n_pix.append(img_1.width * img_1.height)
     # put results in a dataframe
     pct_data = pd.DataFrame(data={
@@ -3796,12 +4367,20 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     })
     pct_data = pct_data.sort_values(by='exposure')
 
+    # load the flat field frame to get PRNU from
+    flat_path_dir = Path('..','..', 'data', 'calibration', 'oros_09012024', 'flat_fields')
+    flat_ave, flat_err = img_1.load_flat_field(flat_path_dir)
+    # get the PRNU over the ROI
+    prnu = np.std(flat_ave[img_1.roix:img_1.roix+img_1.roiw, img_1.roix:img_1.roix+img_1.roih])/np.mean(flat_ave[img_1.roix:img_1.roix+img_1.roiw, img_1.roix:img_1.roix+img_1.roih])
+    if prnu > 0.01:
+        print(f'PRNU is {prnu} for {channel}')
+
     # set as the mean for the highest valued std_t
-    full_well = pct_data['mean'][pct_data['std_t'] == pct_data['std_t'].max()].mean()
+    sat_cap = pct_data['mean'][pct_data['std_t'] == pct_data['std_t'].max()].mean()
 
     if read_noise is None:
         # get read noise DN
-        lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.7*full_well].max()][0])
+        lim = pct_data.index.get_loc(pct_data.index[pct_data['mean'] == pct_data['mean'][pct_data['mean'] < 0.7*sat_cap].max()][0])
 
         # fit quadratic to std_t vs mean
         # fit = np.polyfit(pct_data['mean'][0:lim], pct_data['std_t'][0:lim]**2, 2)
@@ -3828,9 +4407,13 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     # get sensitivity e-/DN
     pct_data['k_adc'] = pct_data['mean'] / pct_data['std_s']**2
 
+
     # get mean sensitivity in linear range - 0.05 - 0.95 x Full Well
-    lin_range = (pct_data['mean'] < full_well*0.95) & (pct_data['mean'] > full_well*0.05)
+    lin_range = (pct_data['mean'] < sat_cap*0.95) & (pct_data['mean'] > sat_cap*0.05)
     k_adc = pct_data['k_adc'][lin_range].mean()
+
+    # get full well capacity DN
+    full_well = 2**12 - 1 # pct_data['mean'].max()
 
     # get linearity
     fit = np.polyfit(pct_data['exposure'][lin_range], pct_data['mean'][lin_range], 1, w=1.0/(pct_data['mean'][lin_range])**2)
@@ -3839,6 +4422,10 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     pct_data['linearity'] = 100.0*((pct_data['mean'] - (fit[1]+fit[0]*pct_data['exposure'])) / (fit[1]+fit[0]*pct_data['exposure']))
     lin_min = pct_data['linearity'][lin_range].min()
     lin_max = pct_data['linearity'][lin_range].max()
+
+    # fit quadratic to nonlinearity model
+    lin_range = (pct_data['mean'] < sat_cap*0.95) & (pct_data['mean'] > sat_cap*0.05)
+    linear_model = np.polyfit(pct_data['mean'][lin_range], pct_data['linearity'][lin_range], 2)
 
     # convet dark signal to electrons
     # pct_data['d_mean'] = pct_data['d_mean'] * k_adc
@@ -3851,7 +4438,7 @@ def load_ptc_frames(light_path: Path, channel: str, dark_path: Path=None,  read_
     # get electron noise
     pct_data['e-_noise'] = pct_data['std_s'] * k_adc
 
-    return pct_data, full_well, k_adc, read_noise, lin_min, lin_max, offset, response
+    return pct_data, sat_cap, k_adc, full_well, read_noise, lin_min, lin_max, linear_model, offset, response, prnu
 
 def get_exposures(smpl_imgs: Dict) -> pd.Series:
     """Show the exposures for each channel of the given set of channels.
